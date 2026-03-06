@@ -1648,16 +1648,10 @@ initFrame:SetScript("OnEvent", function(self)
               setValue=function(v)
                 if not EllesmereUIDB then EllesmereUIDB = {} end
                 EllesmereUIDB.showMinimapButton = v
-                local ok, LDBIcon = pcall(LibStub, "LibDBIcon-1.0")
-                if ok and LDBIcon and LDBIcon:IsRegistered("EllesmereUI") then
-                    local btn = LDBIcon:GetMinimapButton("EllesmereUI")
-                    if v then
-                        if btn and btn.db then btn.db.hide = false end
-                        LDBIcon:Show("EllesmereUI")
-                    else
-                        if btn and btn.db then btn.db.hide = true end
-                        LDBIcon:Hide("EllesmereUI")
-                    end
+                if v then
+                    EllesmereUI.ShowMinimapButton()
+                else
+                    EllesmereUI.HideMinimapButton()
                 end
               end },
             { type="label", text="" });  y = y - h

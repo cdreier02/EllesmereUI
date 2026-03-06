@@ -788,18 +788,30 @@ local function RegisterUnlockElements()
         savePosition = function(_, point, relPoint, x, y, scale)
             if not point then return end
             local sp = ERB.db.profile.secondary
-            sp.unlockPos = { point = point, relPoint = relPoint or point, x = x, y = y }
+            -- Always store CENTER so the bar stays centered when pip count changes
+            if secondaryFrame then
+                local cx, cy = secondaryFrame:GetCenter()
+                if cx and cy then
+                    local es = secondaryFrame:GetEffectiveScale()
+                    local us = UIParent:GetEffectiveScale()
+                    local ux, uy = UIParent:GetCenter()
+                    x = (cx * es - ux * us) / us
+                    y = (cy * es - uy * us) / us
+                end
+            end
+            sp.unlockPos = { point = "CENTER", relPoint = "CENTER", x = x, y = y }
             if scale then sp.scale = scale end
             if secondaryFrame then
                 secondaryFrame:ClearAllPoints()
-                secondaryFrame:SetPoint(point, UIParent, relPoint or point, x, y)
+                secondaryFrame:SetPoint("CENTER", UIParent, "CENTER", x, y)
                 if scale then secondaryFrame:SetScale(scale) end
             end
         end,
         loadPosition = function()
             local pos = ERB.db.profile.secondary.unlockPos
             if not pos then return nil end
-            return { point = pos.point, relPoint = pos.relPoint or pos.point, x = pos.x, y = pos.y }
+            -- Always use CENTER for consistent centering across pip counts
+            return { point = "CENTER", relPoint = "CENTER", x = pos.x, y = pos.y }
         end,
         clearPosition = function()
             local sp = ERB.db.profile.secondary
@@ -816,7 +828,7 @@ local function RegisterUnlockElements()
             if not pos then return end
             if secondaryFrame then
                 secondaryFrame:ClearAllPoints()
-                secondaryFrame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x, pos.y)
+                secondaryFrame:SetPoint("CENTER", UIParent, "CENTER", pos.x or 0, pos.y or 0)
                 secondaryFrame:SetScale(sp.scale or 1)
             end
         end,
@@ -1232,12 +1244,11 @@ local function BuildBars()
         end
 
         if sp.unlockPos and sp.unlockPos.point then
-            -- Position fully managed by unlock mode — no animations, just apply directly
-            local rp = sp.unlockPos.relPoint or sp.unlockPos.point
+            -- Position fully managed by unlock mode — always use CENTER for consistent centering
             secondaryFrame:SetScale(sp.scale)
             secondaryFrame:SetSize(totalW, pipH)
             secondaryFrame:ClearAllPoints()
-            secondaryFrame:SetPoint(sp.unlockPos.point, UIParent, rp, sp.unlockPos.x or 0, sp.unlockPos.y or 0)
+            secondaryFrame:SetPoint("CENTER", UIParent, "CENTER", sp.unlockPos.x or 0, sp.unlockPos.y or 0)
         elseif sp.anchorTo and sp.anchorTo ~= "none" then
             secondaryFrame:SetScale(sp.scale)
             secondaryFrame:SetSize(totalW, pipH)
@@ -2816,51 +2827,9 @@ end
 function ERB:OnEnable()
     if self._userDisabled then return end
 
-    -- Minimap button (shared across all Ellesmere addons — first to load wins)
-    if not _EllesmereUI_MinimapRegistered then
-        local ok, LDB = pcall(LibStub, "LibDataBroker-1.1")
-        local ok2, LDBIcon = pcall(LibStub, "LibDBIcon-1.0")
-        if ok and ok2 and LDB and LDBIcon then
-            local dataObj = LDB:NewDataObject("EllesmereUI", {
-                type = "launcher",
-                icon = "Interface\\AddOns\\EllesmereUI\\media\\eg-logo.tga",
-                OnClick = function(self, button)
-                    if InCombatLockdown() then return end
-                    if button == "LeftButton" then
-                        if EllesmereUI then EllesmereUI:Toggle() end
-                    elseif button == "RightButton" then
-                        if EllesmereUI and EllesmereUI._openUnlockMode then
-                            EllesmereUI._openUnlockMode()
-                        end
-                    elseif button == "MiddleButton" then
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.showMinimapButton = false
-                        if LDBIcon:IsRegistered("EllesmereUI") then
-                            local btn = LDBIcon:GetMinimapButton("EllesmereUI")
-                            if btn and btn.db then btn.db.hide = true end
-                            LDBIcon:Hide("EllesmereUI")
-                        end
-                        local rl = EllesmereUI and EllesmereUI._widgetRefreshList
-                        if rl then for i = 1, #rl do rl[i]() end end
-                    end
-                end,
-                OnTooltipShow = function(tt)
-                    tt:AddLine("|cff0cd29fEllesmereUI|r")
-                    tt:AddLine("|cff0cd29dLeft-click:|r |cffE0E0E0Toggle EllesmereUI|r")
-                    tt:AddLine("|cff0cd29dRight-click:|r |cffE0E0E0Enter Unlock Mode|r")
-                    tt:AddLine("|cff0cd29dMiddle-click:|r |cffE0E0E0Hide Minimap Button|r")
-                end,
-            })
-            if dataObj then
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                if not EllesmereUIDB.minimapIcon then EllesmereUIDB.minimapIcon = {} end
-                if EllesmereUIDB.showMinimapButton == false then
-                    EllesmereUIDB.minimapIcon.hide = true
-                end
-                LDBIcon:Register("EllesmereUI", dataObj, EllesmereUIDB.minimapIcon)
-                _EllesmereUI_MinimapRegistered = true
-            end
-        end
+    -- Minimap button (handled by parent addon)
+    if not _EllesmereUI_MinimapRegistered and EllesmereUI and EllesmereUI.CreateMinimapButton then
+        EllesmereUI.CreateMinimapButton()
     end
 
     local eventFrame = CreateFrame("Frame")

@@ -453,50 +453,9 @@ function EMC:OnEnable()
     if self._userDisabled then return end
 
     -- Minimap button (shared across all Ellesmere addons â€” first to load wins)
-    if not _EllesmereUI_MinimapRegistered then
-        local ok, LDB = pcall(LibStub, "LibDataBroker-1.1")
-        local ok2, LDBIcon = pcall(LibStub, "LibDBIcon-1.0")
-        if ok and ok2 and LDB and LDBIcon then
-            local dataObj = LDB:NewDataObject("EllesmereUI", {
-                type = "launcher",
-                icon = "Interface\\AddOns\\EllesmereUI\\media\\eg-logo.tga",
-                OnClick = function(self, button)
-                    if InCombatLockdown() then return end
-                    if button == "LeftButton" then
-                        if EllesmereUI then EllesmereUI:Toggle() end
-                    elseif button == "RightButton" then
-                        if EllesmereUI and EllesmereUI._openUnlockMode then
-                            EllesmereUI._openUnlockMode()
-                        end
-                    elseif button == "MiddleButton" then
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.showMinimapButton = false
-                        if LDBIcon:IsRegistered("EllesmereUI") then
-                            local btn = LDBIcon:GetMinimapButton("EllesmereUI")
-                            if btn and btn.db then btn.db.hide = true end
-                            LDBIcon:Hide("EllesmereUI")
-                        end
-                        local rl = EllesmereUI and EllesmereUI._widgetRefreshList
-                        if rl then for i = 1, #rl do rl[i]() end end
-                    end
-                end,
-                OnTooltipShow = function(tt)
-                    tt:AddLine("|cff0cd29fEllesmereUI|r")
-                    tt:AddLine("|cff0cd29dLeft-click:|r |cffE0E0E0Toggle EllesmereUI|r")
-                    tt:AddLine("|cff0cd29dRight-click:|r |cffE0E0E0Enter Unlock Mode|r")
-                    tt:AddLine("|cff0cd29dMiddle-click:|r |cffE0E0E0Hide Minimap Button|r")
-                end,
-            })
-            if dataObj then
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                if not EllesmereUIDB.minimapIcon then EllesmereUIDB.minimapIcon = {} end
-                if EllesmereUIDB.showMinimapButton == false then
-                    EllesmereUIDB.minimapIcon.hide = true
-                end
-                LDBIcon:Register("EllesmereUI", dataObj, EllesmereUIDB.minimapIcon)
-                _EllesmereUI_MinimapRegistered = true
-            end
-        end
+    -- Minimap button (handled by parent addon)
+    if not _EllesmereUI_MinimapRegistered and EllesmereUI and EllesmereUI.CreateMinimapButton then
+        EllesmereUI.CreateMinimapButton()
     end
 
     -- Delay apply to ensure all Blizzard frames are loaded

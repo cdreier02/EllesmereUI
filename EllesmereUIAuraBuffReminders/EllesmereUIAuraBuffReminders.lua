@@ -177,6 +177,8 @@ local NON_SECRET_SPELL_IDS = {
     -- Long-term Raid Buffs
     [1126]=true, [1459]=true, [6673]=true, [21562]=true, [369459]=true,
     [462854]=true, [474754]=true,
+    -- Alternate buff IDs (talent variants that provide the same effect)
+    [432661]=true, [432778]=true,
     -- Paladin Auras â€” Devotion Aura (465) is still ContextuallySecret as of
     -- Midnight 12.0; removed from whitelist so the reminder hides in combat.
     -- Blessing of the Bronze Auras
@@ -292,8 +294,20 @@ local function _unitHasBuff(u, spellIDs)
                 end
             end
         end
+    else
+        -- Non-player units: use GetUnitAuraBySpellID for whitelisted IDs
+        -- This works in combat for non-secret spell IDs.
+        for j = 1, #spellIDs do
+            local id = spellIDs[j]
+            if NON_SECRET_SPELL_IDS[id] then
+                local ok, result = pcall(C_UnitAuras.GetUnitAuraBySpellID, u, id)
+                if ok and result ~= nil and not issecretvalue(result) then
+                    return true
+                end
+            end
+        end
     end
-    -- Iterate auras for non-whitelisted IDs or non-player units
+    -- Iterate auras for non-whitelisted IDs (only works out of combat)
     if not inCombat then
         for i = 1, 40 do
             local aura = C_UnitAuras.GetAuraDataByIndex(u, i, "HELPFUL")
@@ -477,14 +491,13 @@ end
 --  SPELL DATA â€” Raid Buffs (all non-secret in 12.0, work in combat)
 -------------------------------------------------------------------------------
 local RAID_BUFFS = {
-    { key="motw",   class="DRUID",   name="Mark of the Wild",       castSpell=1126,   buffIDs={1126},    check="raid" },
+    { key="motw",   class="DRUID",   name="Mark of the Wild",       castSpell=1126,   buffIDs={1126,432661},    check="raid" },
     { key="bshout", class="WARRIOR", name="Battle Shout",           castSpell=6673,   buffIDs={6673},    check="raid" },
     { key="fort",   class="PRIEST",  name="Power Word: Fortitude",  castSpell=21562,  buffIDs={21562},   check="raid" },
-    { key="ai",     class="MAGE",    name="Arcane Intellect",       castSpell=1459,   buffIDs={1459},    check="raid" },
+    { key="ai",     class="MAGE",    name="Arcane Intellect",       castSpell=1459,   buffIDs={1459,432778},    check="raid" },
     { key="bronze", class="EVOKER",  name="Blessing of the Bronze", castSpell=364342,
       buffIDs={381732,381741,381746,381748,381749,381750,381751,381752,381753,381754,381756,381757,381758},
       check="raid" },
-    { key="som",    class="EVOKER",  name="Source of Magic",        castSpell=369459, buffIDs={369459},  check="raid" },
     { key="sky",    class="SHAMAN",  name="Skyfury",                castSpell=462854, buffIDs={462854},  check="raid" },
 }
 
@@ -515,6 +528,10 @@ local AURAS = {
       check="ownOnRaid", combatOk=true },
     -- Beacon of Faith: non-secret (156910) â€” must verify source is player
     { key="bof",        class="PALADIN", name="Beacon of Faith",   castSpell=156910, buffIDs={156910},
+      check="ownOnRaid", combatOk=true, requireInstanceGroup=true },
+    -- Source of Magic: non-secret (369459) â€" applied to a specific healer,
+    -- not the caster; check if player's cast exists on any group member.
+    { key="som",        class="EVOKER",  name="Source of Magic",   castSpell=369459, buffIDs={369459},
       check="ownOnRaid", combatOk=true, requireInstanceGroup=true },
 }
 
@@ -665,18 +682,31 @@ local function PlayerHasBuffByName(buffName)
 end
 
 local function PlayerHasWellFed()
-    return PlayerHasBuffByName("Well Fed") or PlayerHasBuffByName("Hearty Well Fed")
+    -- "Well Fed" and "Hearty Well Fed" are name-based checks since the buff
+    -- spell IDs vary by food type.  Use name iteration (OOC only).
+    -- Also try a broader check: any aura whose name contains "Well Fed".
+    if InCombat() then return true end  -- never show food reminder in combat
+    for i = 1, 40 do
+        local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
+        if not aura then break end
+        local aName = aura.name
+        if aName and not issecretvalue(aName) then
+            if aName == "Well Fed" or aName == "Hearty Well Fed" then return true end
+        end
+    end
+    return false
 end
 
 local function PlayerHasFlaskBuff()
-    -- Use GetPlayerAuraBySpellID for each known flask buff ID
+    -- Try direct API lookup for each known flask buff ID.
+    -- GetPlayerAuraBySpellID works OOC for any spell ID and in combat for
+    -- non-secret IDs.  Flask checks are gated to OOC in Refresh(), so this
+    -- should always succeed when the buff is active.
     for _, id in ipairs(FLASK_BUFF_IDS) do
-        if NON_SECRET_SPELL_IDS[id] then
-            local result = C_UnitAuras.GetPlayerAuraBySpellID(id)
-            if issecretvalue(result) or result then return true end
-        end
+        local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
+        if ok and result ~= nil then return true end
     end
-    -- Fallback: iterate auras (only works out of combat)
+    -- Fallback: iterate auras by name (only works out of combat)
     if not InCombat() then
         for i = 1, 40 do
             local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
@@ -839,7 +869,7 @@ local defaults = {
             showOthersMissing = true,
             scale = 1.0,
             enabled = {
-                motw=true, bshout=true, fort=true, ai=true, bronze=true, som=true, sky=true,
+                motw=true, bshout=true, fort=true, ai=true, bronze=true, sky=true,
             },
         },
         auras = {
@@ -847,7 +877,7 @@ local defaults = {
             scale = 1.0,
             enabled = {
                 symbiotic=true, def_stance=true, berserk_stance=true, shadowform=true,
-                devo_aura=true, bol=true, bof=true,
+                devo_aura=true, bol=true, bof=true, som=true,
             },
         },
         consumables = {
@@ -920,7 +950,7 @@ local combatActiveIcons = {}
 local CURSOR_IMPORTANT = {
     -- All raid buffs are important (checked by cat == "raidbuff")
     -- Specific aura/consumable keys:
-    bol = true, bof = true, es = true,
+    bol = true, bof = true, es = true, som = true,
 }
 local cursorAnchor
 local cursorIconPool = {}
@@ -1422,11 +1452,7 @@ local function Refresh()
                 if canCheck then
                     local isMissing = false
                     if rb.showOthersMissing and (IsInGroup() or IsInRaid()) then
-                        if inCombat then
-                            isMissing = not PlayerHasAuraByID(buff.buffIDs)
-                        else
-                            isMissing = AnyGroupMemberMissingBuff(buff.buffIDs)
-                        end
+                        isMissing = AnyGroupMemberMissingBuff(buff.buffIDs)
                     else
                         isMissing = not PlayerHasAuraByID(buff.buffIDs)
                     end
@@ -2038,51 +2064,20 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2)
     if e == "PLAYER_LOGIN" then
         db = AceDB:New("EllesmereUIAuraBuffRemindersDB", defaults, true)
 
-        -- Minimap button (shared across all Ellesmere addons â€” first to load wins)
-        if not _EllesmereUI_MinimapRegistered then
-            local okLDB, LDB = pcall(LibStub, "LibDataBroker-1.1")
-            local okIcon, LDBIcon = pcall(LibStub, "LibDBIcon-1.0")
-            if okLDB and okIcon and LDB and LDBIcon then
-                local dataObj = LDB:NewDataObject("EllesmereUI", {
-                    type = "launcher",
-                    icon = "Interface\\AddOns\\EllesmereUI\\media\\eg-logo.tga",
-                    OnClick = function(self, button)
-                        if InCombatLockdown() then return end
-                        if button == "LeftButton" then
-                            if EllesmereUI then EllesmereUI:Toggle() end
-                        elseif button == "RightButton" then
-                            if EllesmereUI and EllesmereUI._openUnlockMode then
-                                EllesmereUI._openUnlockMode()
-                            end
-                        elseif button == "MiddleButton" then
-                            if not EllesmereUIDB then EllesmereUIDB = {} end
-                            EllesmereUIDB.showMinimapButton = false
-                            if LDBIcon:IsRegistered("EllesmereUI") then
-                                local btn = LDBIcon:GetMinimapButton("EllesmereUI")
-                                if btn and btn.db then btn.db.hide = true end
-                                LDBIcon:Hide("EllesmereUI")
-                            end
-                            local rl = EllesmereUI and EllesmereUI._widgetRefreshList
-                            if rl then for i = 1, #rl do rl[i]() end end
-                        end
-                    end,
-                    OnTooltipShow = function(tt)
-                        tt:AddLine("|cff0cd29fEllesmereUI|r")
-                        tt:AddLine("|cff0cd29dLeft-click:|r |cffE0E0E0Toggle EllesmereUI|r")
-                        tt:AddLine("|cff0cd29dRight-click:|r |cffE0E0E0Enter Unlock Mode|r")
-                        tt:AddLine("|cff0cd29dMiddle-click:|r |cffE0E0E0Hide Minimap Button|r")
-                    end,
-                })
-                if dataObj then
-                    if not EllesmereUIDB then EllesmereUIDB = {} end
-                    if not EllesmereUIDB.minimapIcon then EllesmereUIDB.minimapIcon = {} end
-                    if EllesmereUIDB.showMinimapButton == false then
-                        EllesmereUIDB.minimapIcon.hide = true
-                    end
-                    LDBIcon:Register("EllesmereUI", dataObj, EllesmereUIDB.minimapIcon)
-                    _EllesmereUI_MinimapRegistered = true
+        -- Migration: Source of Magic moved from raidBuffs to auras
+        if db.profile.raidBuffs and db.profile.raidBuffs.enabled and db.profile.raidBuffs.enabled.som ~= nil then
+            if db.profile.auras and db.profile.auras.enabled then
+                if db.profile.auras.enabled.som == nil then
+                    db.profile.auras.enabled.som = db.profile.raidBuffs.enabled.som
                 end
             end
+            db.profile.raidBuffs.enabled.som = nil
+        end
+
+        -- Minimap button (shared across all Ellesmere addons â€” first to load wins)
+        -- Minimap button (handled by parent addon)
+        if not _EllesmereUI_MinimapRegistered and EllesmereUI and EllesmereUI.CreateMinimapButton then
+            EllesmereUI.CreateMinimapButton()
         end
 
         -- Expose globals for options
@@ -2318,17 +2313,11 @@ SlashCmdList["EABRDEBUG"] = function()
             else
                 local isMissing
                 if rb.showOthersMissing and (inGroup or inRaid) then
-                    if inCombat then
-                        isMissing = not PlayerHasAuraByID(buff.buffIDs)
-                        status = isMissing and "|cffff4444MISSING (combat, player-only check)|r" or "buff present (combat, player-only)"
-                    else
-                        isMissing = AnyGroupMemberMissingBuff(buff.buffIDs)
-                        status = isMissing and "|cffff4444MISSING â€” should show icon|r" or "buff present"
-                    end
+                    isMissing = AnyGroupMemberMissingBuff(buff.buffIDs)
                 else
                     isMissing = not PlayerHasAuraByID(buff.buffIDs)
-                    status = isMissing and "|cffff4444MISSING â€” should show icon|r" or "buff present"
                 end
+                status = isMissing and "|cffff4444MISSING|r" or "buff present"
             end
             p("  " .. buff.key .. " (" .. buff.name .. "): " .. status)
         end

@@ -288,6 +288,9 @@ local isSmoothing = false
 local smoothFrame
 local UpdateScrollThumb
 local suppressScrollRangeChanged = false
+-- Sidebar nav layout constants (set once in CreateMainFrame, used by RefreshSidebarStates)
+local _sidebarNavRowH = 50
+local _sidebarAddonNavTop = -228  -- NAV_TOP(-128) - NAV_ROW_H(50) * 2
 local lastHeaderPadded = false
 local skipScrollChildReanchor = false
 
@@ -2468,6 +2471,7 @@ local function CreateMainFrame()
     local NAV_ICON_W  = 52    -- exact pixel width
     local NAV_ICON_H  = 37    -- exact pixel height
     local NAV_LEFT    = 20    -- left padding for icon
+    _sidebarNavRowH = NAV_ROW_H
     local NAV_TXT_GAP = 14    -- gap between icon and label
 
     -- Helper: create a 1px horizontal glow line on a sidebar button (TOP or BOTTOM edge)
@@ -2662,6 +2666,7 @@ local function CreateMainFrame()
 
     -- Addon offset: first addon starts two rows below (Unlock Mode + Global Settings)
     local ADDON_NAV_TOP = NAV_TOP - NAV_ROW_H * 2
+    _sidebarAddonNavTop = ADDON_NAV_TOP
 
     for i, info in ipairs(ADDON_ROSTER) do
         local btn = CreateFrame("Button", nil, sidebar)
@@ -4954,10 +4959,30 @@ local function RefreshSidebarStates()
 
     local firstLoaded = nil
     local disabledAddons = EllesmereUIDB and EllesmereUIDB.disabledAddons or {}
+
+    -- Sort: enabled/loaded addons first, disabled/uninstalled last
+    local enabledList, disabledList = {}, {}
     for _, info in ipairs(ADDON_ROSTER) do
+        local folder = info.folder
+        local loaded = info.alwaysLoaded or IsAddonLoaded(folder)
+        local userDisabled = loaded and disabledAddons[folder] == true
+        if loaded and not userDisabled then
+            enabledList[#enabledList + 1] = info
+        else
+            disabledList[#disabledList + 1] = info
+        end
+    end
+    local sortedRoster = {}
+    for _, info in ipairs(enabledList) do sortedRoster[#sortedRoster + 1] = info end
+    for _, info in ipairs(disabledList) do sortedRoster[#sortedRoster + 1] = info end
+
+    for rowIndex, info in ipairs(sortedRoster) do
         local folder = info.folder
         local btn = sidebarButtons[folder]
         if not btn then break end
+        -- Reposition button based on sorted order
+        btn:ClearAllPoints()
+        btn:SetPoint("TOPLEFT", sidebar, "TOPLEFT", 0, _sidebarAddonNavTop - (rowIndex - 1) * _sidebarNavRowH)
         -- Party Mode is baked into all addons; always treat it as loaded
         local loaded = info.alwaysLoaded or IsAddonLoaded(folder)
         local userDisabled = loaded and disabledAddons[folder] == true
@@ -5190,7 +5215,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "2.9"
+EllesmereUI.VERSION = "2.9.5"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end
@@ -5261,7 +5286,6 @@ if not _G._EUI_ConflictChecked then
     C_Timer.After(2, function()
         local IsLoaded = C_AddOns and C_AddOns.IsAddOnLoaded
         if not IsLoaded then return end
-        local euiAddons = _G._EUI_AddonVersions or {}
 
         -- conflict list: { addon, label, targets, message }
         -- targets = "all" or a table of Ellesmere folder names
@@ -5284,9 +5308,15 @@ if not _G._EUI_ConflictChecked then
 
         local exempt = { EllesmereUIPartyMode = true }
 
+        -- Ensure the dismissed-conflicts table exists in SavedVariables
+        if not EllesmereUIDB then EllesmereUIDB = {} end
+        if not EllesmereUIDB.dismissedConflicts then EllesmereUIDB.dismissedConflicts = {} end
+        local dismissed = EllesmereUIDB.dismissedConflicts
+
+        -- Collect all conflicts that are active and not yet dismissed
+        local pending = {}
         for _, entry in ipairs(conflicts) do
-            if entry.addon ~= EUI_HOST_ADDON and IsLoaded(entry.addon) then
-                -- Find which of our addons this conflicts with
+            if entry.addon ~= EUI_HOST_ADDON and IsLoaded(entry.addon) and not dismissed[entry.addon] then
                 local affected = {}
                 if entry.targets == "all" then
                     local allTargets = {
@@ -5307,30 +5337,47 @@ if not _G._EUI_ConflictChecked then
                     end
                 end
                 if #affected > 0 then
-                    -- Build a readable list of our affected addons
-                    local names = {}
-                    for _, a in ipairs(affected) do
-                        names[#names + 1] = a:gsub("^EllesmereUI", "")
-                    end
-                    local msg = entry.message or (
-                        entry.label .. " is not compatible with EllesmereUI " .. table.concat(names, ", ")
-                        .. ". Running both at the same time may cause errors or unexpected behavior."
-                        .. "\n\nPlease disable one of them."
-                    )
-                    if EllesmereUI.ShowConfirmPopup then
-                        EllesmereUI:ShowConfirmPopup({
-                            title       = "Incompatible Addon Detected",
-                            message     = msg,
-                            confirmText = "Okay",
-                            cancelText  = "Dismiss",
-                        })
-                    else
-                        print("|cffff6060[EllesmereUI]|r " .. msg:gsub("\n", " "))
-                    end
-                    break  -- one popup at a time, don't spam
+                    pending[#pending + 1] = { entry = entry, affected = affected }
                 end
             end
         end
+
+        -- Show one popup at a time; each dismissal marks the addon as seen forever
+        local pendingIndex = 0
+        local function ShowNextConflict()
+            pendingIndex = pendingIndex + 1
+            local item = pending[pendingIndex]
+            if not item then return end
+            local entry, affected = item.entry, item.affected
+            local names = {}
+            for _, a in ipairs(affected) do
+                names[#names + 1] = a:gsub("^EllesmereUI", "")
+            end
+            local msg = entry.message or (
+                entry.label .. " is not compatible with EllesmereUI " .. table.concat(names, ", ")
+                .. ". Running both at the same time may cause errors or unexpected behavior."
+                .. "\n\nPlease disable one of them."
+            )
+            local function onDismiss()
+                dismissed[entry.addon] = true
+                ShowNextConflict()
+            end
+            if EllesmereUI.ShowConfirmPopup then
+                EllesmereUI:ShowConfirmPopup({
+                    title       = "Incompatible Addon Detected",
+                    message     = msg,
+                    confirmText = "Okay",
+                    cancelText  = "Don't show again",
+                    onConfirm   = onDismiss,
+                    onCancel    = onDismiss,
+                })
+            else
+                print("|cffff6060[EllesmereUI]|r " .. msg:gsub("\n", " "))
+                dismissed[entry.addon] = true
+                ShowNextConflict()
+            end
+        end
+        ShowNextConflict()
     end)
 end
 
@@ -5582,10 +5629,12 @@ do
                 statsFrame:SetPoint(pos.point, UIParent, pos.relPoint or pos.point, pos.x or 0, pos.y or 0)
             end
         end
-        statsFrame:RegisterEvent("UNIT_STATS")
+        statsFrame:RegisterUnitEvent("UNIT_STATS", "player")
         statsFrame:RegisterEvent("COMBAT_RATING_UPDATE")
         statsFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-        statsFrame:SetScript("OnEvent", function() UpdateSecondaryStats() end)
+        statsFrame:SetScript("OnEvent", function()
+            UpdateSecondaryStats()
+        end)
         statsFrame:Show()
         UpdateSecondaryStats()
     end
@@ -5597,6 +5646,142 @@ do
             ApplySecondaryStats()
         end
         return statsFrame
+    end
+end
+
+-------------------------------------------------------------------------------
+--  Native Minimap Button (no library dependencies)
+-------------------------------------------------------------------------------
+do
+    local ICON_PATH = "Interface\\AddOns\\EllesmereUI\\media\\eg-logo.tga"
+    local BUTTON_SIZE = 32
+    local MINIMAP_RADIUS = 80
+    local btn
+
+    local function GetAngle()
+        if not EllesmereUIDB then EllesmereUIDB = {} end
+        return EllesmereUIDB.minimapButtonAngle or 220
+    end
+
+    local function SetAngle(angle)
+        if not EllesmereUIDB then EllesmereUIDB = {} end
+        EllesmereUIDB.minimapButtonAngle = angle
+    end
+
+    local function UpdatePosition()
+        if not btn then return end
+        local angle = math.rad(GetAngle())
+        -- Compute radius from actual minimap dimensions so it works with any shape/size
+        local mw, mh = Minimap:GetWidth(), Minimap:GetHeight()
+        local radius = (math.max(mw, mh) / 2) + 5
+        local x = math.cos(angle) * radius
+        local y = math.sin(angle) * radius
+        btn:ClearAllPoints()
+        btn:SetPoint("CENTER", Minimap, "CENTER", x, y)
+    end
+
+    function EllesmereUI.CreateMinimapButton()
+        if btn then return btn end
+
+        btn = CreateFrame("Button", "EllesmereUIMinimapButton", Minimap)
+        btn:SetSize(BUTTON_SIZE, BUTTON_SIZE)
+        btn:SetFrameStrata("MEDIUM")
+        btn:SetFrameLevel(8)
+        btn:SetClampedToScreen(true)
+        btn:RegisterForClicks("LeftButtonUp", "RightButtonUp", "MiddleButtonUp")
+        btn:RegisterForDrag("LeftButton")
+        btn:SetMovable(true)
+
+        -- Background fill (black circle behind the icon)
+        local bg = btn:CreateTexture(nil, "BACKGROUND")
+        bg:SetSize(25, 25)
+        bg:SetPoint("CENTER", 0, 0)
+        bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+        bg:SetVertexColor(0, 0, 0, 1)
+
+        -- Icon
+        local icon = btn:CreateTexture(nil, "ARTWORK")
+        icon:SetSize(17, 17)
+        icon:SetPoint("CENTER", 0, 0)
+        icon:SetTexture(ICON_PATH)
+
+        -- Border overlay (standard minimap button look — offset to compensate for built-in padding)
+        local overlay = btn:CreateTexture(nil, "OVERLAY")
+        overlay:SetSize(53, 53)
+        overlay:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+        overlay:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+
+        -- Highlight (circular, not square)
+        btn:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+
+        -- Click handler
+        btn:SetScript("OnClick", function(_, button)
+            if InCombatLockdown() then return end
+            if button == "LeftButton" then
+                if EllesmereUI then EllesmereUI:Toggle() end
+            elseif button == "RightButton" then
+                if EllesmereUI and EllesmereUI._openUnlockMode then
+                    EllesmereUI._openUnlockMode()
+                end
+            elseif button == "MiddleButton" then
+                if not EllesmereUIDB then EllesmereUIDB = {} end
+                EllesmereUIDB.showMinimapButton = false
+                btn:Hide()
+                local rl = EllesmereUI and EllesmereUI._widgetRefreshList
+                if rl then for i = 1, #rl do rl[i]() end end
+            end
+        end)
+
+        -- Tooltip
+        btn:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+            GameTooltip:AddLine("|cff0cd29fEllesmereUI|r")
+            GameTooltip:AddLine("|cff0cd29dLeft-click:|r |cffE0E0E0Toggle EllesmereUI|r")
+            GameTooltip:AddLine("|cff0cd29dRight-click:|r |cffE0E0E0Enter Unlock Mode|r")
+            GameTooltip:AddLine("|cff0cd29dMiddle-click:|r |cffE0E0E0Hide Minimap Button|r")
+            GameTooltip:Show()
+        end)
+        btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+        -- Drag to reposition around minimap
+        btn:SetScript("OnDragStart", function(self)
+            self:StartMoving()
+            self:SetScript("OnUpdate", function()
+                local mx, my = Minimap:GetCenter()
+                local cx, cy = GetCursorPosition()
+                local scale = Minimap:GetEffectiveScale()
+                cx, cy = cx / scale, cy / scale
+                local angle = math.deg(math.atan2(cy - my, cx - mx))
+                SetAngle(angle)
+                UpdatePosition()
+            end)
+        end)
+        btn:SetScript("OnDragStop", function(self)
+            self:StopMovingOrSizing()
+            self:SetScript("OnUpdate", nil)
+            UpdatePosition()
+        end)
+
+        UpdatePosition()
+
+        -- Respect saved visibility
+        if EllesmereUIDB and EllesmereUIDB.showMinimapButton == false then
+            btn:Hide()
+        else
+            btn:Show()
+        end
+
+        _EllesmereUI_MinimapRegistered = true
+        return btn
+    end
+
+    function EllesmereUI.ShowMinimapButton()
+        if not btn then EllesmereUI.CreateMinimapButton() end
+        if btn then btn:Show() end
+    end
+
+    function EllesmereUI.HideMinimapButton()
+        if btn then btn:Hide() end
     end
 end
 
@@ -5617,6 +5802,9 @@ initFrame:SetScript("OnEvent", function(self, event)
 
     -- PLAYER_LOGIN: register demo modules (UI is built lazily on first open)
     self:UnregisterEvent("PLAYER_LOGIN")
+
+    -- Create native minimap button
+    EllesmereUI.CreateMinimapButton()
 
     -- Apply streamer settings
     if EllesmereUI._applyGuildChatPrivacy then EllesmereUI._applyGuildChatPrivacy() end

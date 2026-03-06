@@ -130,6 +130,42 @@ ns._multiChargeSpells    = _multiChargeSpells
 ns._maxChargeCount       = _maxChargeCount
 ns.CacheMultiChargeSpell = CacheMultiChargeSpell
 
+-- Cast-count spell cache: identifies spells that use GetSpellCastCount for
+-- stack tracking (e.g. Sheilun's Gift, Mana Tea). These spells start at 0
+-- stacks and build them in combat, so we cache the last known non-zero count
+-- OOC and persist to SavedVariables for combat use.
+-- Maps spellID -> last known count (number) or false (confirmed not a cast-count spell)
+local _castCountSpells = {}
+
+local function CacheCastCountSpell(spellID)
+    if not spellID or not C_Spell.GetSpellCastCount then return end
+    -- Already confirmed not a cast-count spell — skip
+    if _castCountSpells[spellID] == false then return end
+    local ok, count = pcall(C_Spell.GetSpellCastCount, spellID)
+    if not ok or count == nil then return end
+
+    if not (issecretvalue and issecretvalue(count)) then
+        -- OOC: if count > 0, remember this spell uses cast counts
+        if count > 0 then
+            _castCountSpells[spellID] = count
+            local db = ECME.db
+            if db and db.global then
+                if not db.global.castCountSpells then
+                    db.global.castCountSpells = {}
+                end
+                db.global.castCountSpells[spellID] = true
+            end
+        end
+        -- Don't cache false here — spell may just not have stacks yet
+    elseif _castCountSpells[spellID] == nil then
+        -- Secret (combat): check DB for whether we've ever seen this spell with stacks
+        local db = ECME.db
+        if db and db.global and db.global.castCountSpells and db.global.castCountSpells[spellID] then
+            _castCountSpells[spellID] = true
+        end
+    end
+end
+
 -------------------------------------------------------------------------------
 --  Per-tick caches: wiped at the start of each UpdateAllCDMBars tick.
 --  Avoids redundant C API calls when the same spellID appears on multiple
@@ -138,6 +174,11 @@ ns.CacheMultiChargeSpell = CacheMultiChargeSpell
 local _tickGCDCache   = {}  -- [spellID] = bool|nil (GCD check result)
 local _tickChargeCache = {} -- [spellID] = charges table or false
 local _tickAuraCache  = {}  -- [spellID] = aura table or false
+
+-- Keybind cache: built once out-of-combat, looked up per tick
+local _cdmKeybindCache       = {}   -- [spellID] -> formatted key string
+local _keybindRebuildPending = false
+local _keybindCacheReady     = false  -- true after first successful build
 
 -- FormatTime string cache: same floored-second = same string output.
 -- Wiped when the integer second changes (not per tick).
@@ -326,6 +367,32 @@ local function ApplySpellCooldown(icon, spellID, desatOnCD, showCharges, swAlpha
             if aura and aura.applications and not (issecretvalue and issecretvalue(aura.applications)) and aura.applications > 1 then
                 icon._chargeText:SetText(aura.applications)
                 icon._chargeText:Show()
+            elseif C_Spell.GetSpellCastCount then
+                -- Cast count fallback for spells that accumulate stacks via
+                -- the cast count system rather than auras.
+                -- Only attempt for confirmed cast-count spells (cached OOC).
+                -- In combat, returns secret values — pass directly to SetText.
+                CacheCastCountSpell(spellID)
+                if _castCountSpells[spellID] then
+                    local ok, count = pcall(C_Spell.GetSpellCastCount, spellID)
+                    if ok and count then
+                        if issecretvalue and issecretvalue(count) then
+                            -- Secret (combat): show directly, FontStrings render secrets.
+                            -- We cannot compare or read back the value without tainting.
+                            icon._chargeText:SetText(count)
+                            icon._chargeText:Show()
+                        elseif count > 0 then
+                            icon._chargeText:SetText(count)
+                            icon._chargeText:Show()
+                        else
+                            icon._chargeText:Hide()
+                        end
+                    else
+                        icon._chargeText:Hide()
+                    end
+                else
+                    icon._chargeText:Hide()
+                end
             else
                 icon._chargeText:Hide()
             end
@@ -450,11 +517,13 @@ local function ApplyStackCount(icon, resolvedSid, auraInstanceID, auraUnit, show
                 end
             end
         end
-        icon._stackText:Hide()
-        return
+        -- Applications frame not showing — fall through to aura lookup below.
+        -- Spells like Sheilun's Gift and Mana Tea accumulate stacks as a
+        -- player buff but Blizzard's CDM may not populate the Applications
+        -- sub-frame for them.
     end
 
-    -- Fallback: spellID aura lookup for non-blizzChild paths (out of combat only)
+    -- Aura-based stack lookup: check the resolved spell ID for applications
     if resolvedSid and resolvedSid > 0 then
         local aura = _tickAuraCache[resolvedSid]
         if aura == nil then
@@ -468,6 +537,44 @@ local function ApplyStackCount(icon, resolvedSid, auraInstanceID, auraUnit, show
                 icon._stackText:SetText(tostring(apps))
                 icon._stackText:Show()
                 return
+            end
+        end
+    end
+
+    -- Final fallback: use auraInstanceID to look up the aura directly.
+    if auraInstanceID and auraUnit then
+        local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, auraUnit, auraInstanceID)
+        if ok and auraData then
+            local apps = auraData.applications
+            if apps ~= nil and not (issecretvalue and issecretvalue(apps)) and apps > 1 then
+                icon._stackText:SetText(tostring(apps))
+                icon._stackText:Show()
+                return
+            end
+        end
+    end
+
+    -- Cast count fallback: spells that accumulate stacks via the cast count
+    -- system rather than auras (e.g. Sheilun's Gift clouds, Mana Tea).
+    -- Only attempt for spells confirmed to use cast counts (cached OOC).
+    -- In combat, GetSpellCastCount returns secret values — pass them directly
+    -- to SetText (FontStrings render secrets natively), same as charge text.
+    if resolvedSid and resolvedSid > 0 and C_Spell.GetSpellCastCount then
+        CacheCastCountSpell(resolvedSid)
+        if _castCountSpells[resolvedSid] then
+            local ok, count = pcall(C_Spell.GetSpellCastCount, resolvedSid)
+            if ok and count then
+                if issecretvalue and issecretvalue(count) then
+                    -- Secret (combat): show directly, FontStrings render secrets.
+                    -- We cannot compare or read back the value without tainting.
+                    icon._stackText:SetText(count)
+                    icon._stackText:Show()
+                    return
+                elseif count > 0 then
+                    icon._stackText:SetText(tostring(count))
+                    icon._stackText:Show()
+                    return
+                end
             end
         end
     end
@@ -568,6 +675,12 @@ local DEFAULTS = {
                 stackCountX = 0,
                 stackCountY = 0,
                 stackCountR = 1, stackCountG = 1, stackCountB = 1,
+                showTooltip = false,
+                showKeybind = false,
+                keybindSize = 10,
+                keybindOffsetX = 2,
+                keybindOffsetY = -2,
+                keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
             },
             -- The 3 default bars (match Blizzard CDM)
             bars = {
@@ -592,6 +705,9 @@ local DEFAULTS = {
                     showStackCount = false, stackCountSize = 11,
                     stackCountX = 0, stackCountY = 0,
                     stackCountR = 1, stackCountG = 1, stackCountB = 1,
+                    showTooltip = false, showKeybind = false,
+                    keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
+                    keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
                 },
                 {
                     key = "utility", name = "Utility", enabled = true,
@@ -614,6 +730,9 @@ local DEFAULTS = {
                     showStackCount = false, stackCountSize = 11,
                     stackCountX = 0, stackCountY = 0,
                     stackCountR = 1, stackCountG = 1, stackCountB = 1,
+                    showTooltip = false, showKeybind = false,
+                    keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
+                    keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
                 },
                 {
                     key = "buffs", name = "Buffs", enabled = true,
@@ -636,6 +755,9 @@ local DEFAULTS = {
                     showStackCount = false, stackCountSize = 11,
                     stackCountX = 0, stackCountY = 0,
                     stackCountR = 1, stackCountG = 1, stackCountB = 1,
+                    showTooltip = false, showKeybind = false,
+                    keybindSize = 10, keybindOffsetX = 2, keybindOffsetY = -2,
+                    keybindR = 1, keybindG = 1, keybindB = 1, keybindA = 0.9,
                 },
             },
         },
@@ -2212,8 +2334,8 @@ local function CreateCDMIcon(barKey, index)
 
     local icon = CreateFrame("Frame", "ECME_CDMIcon_" .. barKey .. "_" .. index, frame)
     icon:SetSize(SnapForScale(iconSize, barScale), SnapForScale(iconSize, barScale))
-    if icon.EnableMouseClicks then icon:EnableMouseClicks(false) end
-    if icon.EnableMouseMotion then icon:EnableMouseMotion(true) end
+    icon:EnableMouse(false)  -- click-through by default
+    if icon.EnableMouseMotion then icon:EnableMouseMotion(false) end
 
     -- Background
     local bg = icon:CreateTexture(nil, "BACKGROUND")
@@ -2233,6 +2355,7 @@ local function CreateCDMIcon(barKey, index)
     -- Cooldown overlay (frame level above icon so swipe renders on top of texture)
     local cd = CreateFrame("Cooldown", nil, icon, "CooldownFrameTemplate")
     cd:SetFrameLevel(icon:GetFrameLevel() + 1)
+    cd:EnableMouse(false)
     cd:SetPoint("TOPLEFT", icon, "TOPLEFT", borderSize, -borderSize)
     cd:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", -borderSize, borderSize)
     cd:SetDrawEdge(false)
@@ -2255,6 +2378,7 @@ local function CreateCDMIcon(barKey, index)
     local textOverlay = CreateFrame("Frame", nil, icon)
     textOverlay:SetAllPoints(icon)
     textOverlay:SetFrameLevel(icon:GetFrameLevel() + 2)
+    textOverlay:EnableMouse(false)
     icon._textOverlay = textOverlay
 
     -- Charge count text
@@ -2281,12 +2405,53 @@ local function CreateCDMIcon(barKey, index)
     glowOverlay:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT",  3, -3)
     glowOverlay:SetFrameLevel(icon:GetFrameLevel() + 3)
     glowOverlay:SetAlpha(0)
+    glowOverlay:EnableMouse(false)
     icon._glowOverlay = glowOverlay
+
+    -- Keybind text overlay (top-left corner of icon)
+    local keybindText = textOverlay:CreateFontString(nil, "OVERLAY")
+    keybindText:SetFont(GetCDMFont(), barData.keybindSize or 10, "OUTLINE")
+    keybindText:SetPoint("TOPLEFT", textOverlay, "TOPLEFT", barData.keybindOffsetX or 2, barData.keybindOffsetY or -2)
+    keybindText:SetJustifyH("LEFT")
+    keybindText:SetTextColor(barData.keybindR or 1, barData.keybindG or 1, barData.keybindB or 1, barData.keybindA or 0.9)
+    keybindText:Hide()
+    icon._keybindText = keybindText
+
+    -- Tooltip on hover — uses OnUpdate cursor check so the icon stays click-through
+    -- (EnableMouse stays false; we poll IsMouseOver each frame instead)
+    local tooltipOverlay = CreateFrame("Frame", nil, icon)
+    tooltipOverlay:SetAllPoints(icon)
+    tooltipOverlay:SetFrameLevel(icon:GetFrameLevel() + 4)
+    tooltipOverlay:EnableMouse(false)
+    icon._tooltipShown = false
+    icon:SetScript("OnUpdate", function(self)
+        local bd = barDataByKey[self._barKey]
+        if not bd or not bd.showTooltip then
+            if self._tooltipShown then
+                GameTooltip:Hide()
+                self._tooltipShown = false
+            end
+            return
+        end
+        local over = self:IsMouseOver()
+        if over and not self._tooltipShown then
+            local sid = self._spellID
+            if sid then
+                GameTooltip:SetOwner(self, "ANCHOR_CURSOR")
+                GameTooltip:SetSpellByID(sid)
+                GameTooltip:Show()
+                self._tooltipShown = true
+            end
+        elseif not over and self._tooltipShown then
+            GameTooltip:Hide()
+            self._tooltipShown = false
+        end
+    end)
+    icon._tooltipOverlay = tooltipOverlay
 
     -- Border (4 edges)
     local edges = {}
-    for i = 1, 4 do
-        local e = icon:CreateTexture(nil, "OVERLAY", nil, 7)
+    for i = 1, 4 do        local e = icon:CreateTexture(nil, "OVERLAY", nil, 7)
         e:SetColorTexture(barData.borderR or 0, barData.borderG or 0, barData.borderB or 0, barData.borderA or 1)
         PP.DisablePixelSnap(e)
         edges[i] = e
@@ -2581,6 +2746,20 @@ local function UpdateCustomBarIcons(barKey)
 
                 -- Cooldown, desaturation, and charge text (consolidated)
                 ourIcon._spellID = spellID
+                -- Apply cached keybind for this spell if not already set
+                if ourIcon._keybindText and barData.showKeybind then
+                    local cachedKey = _cdmKeybindCache[spellID]
+                    if not cachedKey then
+                        local n = C_Spell.GetSpellName and C_Spell.GetSpellName(spellID)
+                        if n then cachedKey = _cdmKeybindCache[n] end
+                    end
+                    if cachedKey then
+                        ourIcon._keybindText:SetText(cachedKey)
+                        ourIcon._keybindText:Show()
+                    elseif ourIcon._keybindText:IsShown() then
+                        ourIcon._keybindText:Hide()
+                    end
+                end
                 ApplySpellCooldown(ourIcon, spellID, barData.desaturateOnCD, barData.showCharges, barData.swipeAlpha or 0.7, false)
 
                 if ourIcon._cooldown.SetUseAuraDisplayTime then
@@ -2751,8 +2930,8 @@ UpdateCDMBarIcons = function(barKey)
             -- Active state animation (consolidated)
             ApplyActiveAnimation(ourIcon, auraHandled, barData, barKey, activeAnim, animR, animG, animB, swAlpha)
 
-            -- Stack count text (consolidated)
-            ApplyStackCount(ourIcon, resolvedSid, blizzIcon.auraInstanceID, blizzIcon.auraDataUnit, barData.showStackCount, blizzIcon)
+            -- Stack count text (consolidated — always enabled)
+            ApplyStackCount(ourIcon, resolvedSid, blizzIcon.auraInstanceID, blizzIcon.auraDataUnit, true, blizzIcon)
 
             ourIcon:Show()
 
@@ -2870,6 +3049,18 @@ local function RefreshCDMIconAppearance(barKey)
             icon._stackText:SetTextColor(barData.stackCountR or 1, barData.stackCountG or 1, barData.stackCountB or 1)
         end
 
+        -- Update keybind text style
+        if icon._keybindText then
+            icon._keybindText:SetFont(GetCDMFont(), barData.keybindSize or 10, "OUTLINE")
+            icon._keybindText:ClearAllPoints()
+            icon._keybindText:SetPoint("TOPLEFT", icon._textOverlay, "TOPLEFT", barData.keybindOffsetX or 2, barData.keybindOffsetY or -2)
+            icon._keybindText:SetTextColor(barData.keybindR or 1, barData.keybindG or 1, barData.keybindB or 1, barData.keybindA or 0.9)
+        end
+
+        -- Update tooltip overlay mouse state
+        if icon._tooltipOverlay then
+            icon._tooltipOverlay:EnableMouse(false)
+        end
         -- Apply custom shape (overrides border/zoom set above)
         local shape = barData.iconShape or "none"
         ApplyShapeToCDMIcon(icon, shape, barData)
@@ -3051,6 +3242,20 @@ local function UpdateTrackedBarIcons(barKey)
             -- Spell cooldown, desaturation, and charge text (uses shared helper)
             if resolvedSid and resolvedSid > 0 then
                 ourIcon._spellID = resolvedSid
+                -- Apply cached keybind for this spell if not already set
+                if ourIcon._keybindText and barData.showKeybind then
+                    local cachedKey = _cdmKeybindCache[resolvedSid]
+                    if not cachedKey then
+                        local n = C_Spell.GetSpellName and C_Spell.GetSpellName(resolvedSid)
+                        if n then cachedKey = _cdmKeybindCache[n] end
+                    end
+                    if cachedKey then
+                        ourIcon._keybindText:SetText(cachedKey)
+                        ourIcon._keybindText:Show()
+                    elseif ourIcon._keybindText:IsShown() then
+                        ourIcon._keybindText:Hide()
+                    end
+                end
                 ApplySpellCooldown(ourIcon, resolvedSid, desatOnCD, showCharges, swAlpha, auraHandled)
             else
                 if desatOnCD and ourIcon._lastDesat then
@@ -3063,8 +3268,8 @@ local function UpdateTrackedBarIcons(barKey)
             -- Active state animation (consolidated)
             ApplyActiveAnimation(ourIcon, auraHandled, barData, barKey, activeAnim, animR, animG, animB, swAlpha)
 
-            -- Stack count text (consolidated)
-            ApplyStackCount(ourIcon, resolvedSid, blizzChild.auraInstanceID, blizzChild.auraDataUnit, barData.showStackCount, blizzChild)
+            -- Stack count text (consolidated — always enabled)
+            ApplyStackCount(ourIcon, resolvedSid, blizzChild.auraInstanceID, blizzChild.auraDataUnit, true, blizzChild)
 
             ourIcon:Show()
 
@@ -3363,6 +3568,126 @@ end
 -------------------------------------------------------------------------------
 --  Build all CDM bars
 -------------------------------------------------------------------------------
+-------------------------------------------------------------------------------
+--  Keybind cache for CDM icons
+--  Built once out-of-combat by scanning all action bar slots.
+--  Stored as { [spellID] = "formatted key" } so icon display is just a lookup.
+--  Deferred if called during combat; fires on PLAYER_REGEN_ENABLED instead.
+-------------------------------------------------------------------------------
+
+
+-------------------------------------------------------------------------------
+--  Keybind cache for CDM icons
+--  Reads HotKey text directly from action button frames — the same source
+--  the action bar itself uses, so it's always correct regardless of bar addon.
+--  Deferred if called during combat; fires on PLAYER_REGEN_ENABLED instead.
+-------------------------------------------------------------------------------
+
+-- Action bar slot → binding name map. Non-bar-1 entries listed first so that
+-- if a spell appears on multiple bars, the more specific bar wins over bar 1.
+local _barBindingDefs = {
+    { prefix = "MULTIACTIONBAR1BUTTON", startSlot = 61  },  -- bar 2 bottom left
+    { prefix = "MULTIACTIONBAR2BUTTON", startSlot = 49  },  -- bar 3 bottom right
+    { prefix = "MULTIACTIONBAR3BUTTON", startSlot = 25  },  -- bar 4 right
+    { prefix = "MULTIACTIONBAR4BUTTON", startSlot = 37  },  -- bar 5 left
+    { prefix = "MULTIACTIONBAR5BUTTON", startSlot = 145 },  -- bar 6
+    { prefix = "MULTIACTIONBAR6BUTTON", startSlot = 157 },  -- bar 7
+    { prefix = "MULTIACTIONBAR7BUTTON", startSlot = 169 },  -- bar 8
+    { prefix = "ACTIONBUTTON",          startSlot = 1   },  -- bar 1 (last = lowest priority)
+}
+
+local function FormatKeybindKey(key)
+    if not key or key == "" then return nil end
+    key = key:gsub("SHIFT%-", "S")
+    key = key:gsub("CTRL%-",  "C")
+    key = key:gsub("ALT%-",   "A")
+    key = key:gsub("Mouse Button ", "M")
+    key = key:gsub("MOUSEWHEELUP",   "MwU")
+    key = key:gsub("MOUSEWHEELDOWN", "MwD")
+    key = key:gsub("NUMPADDECIMAL",  "N.")
+    key = key:gsub("NUMPADPLUS",     "N+")
+    key = key:gsub("NUMPADMINUS",    "N-")
+    key = key:gsub("NUMPADMULTIPLY", "N*")
+    key = key:gsub("NUMPADDIVIDE",   "N/")
+    key = key:gsub("NUMPAD",         "N")
+    key = key:gsub("BUTTON",         "M")
+    return key ~= "" and key or nil
+end
+
+local function RebuildKeybindCache()
+    wipe(_cdmKeybindCache)
+    for _, def in ipairs(_barBindingDefs) do
+        for i = 1, 12 do
+            local bindName = def.prefix .. i
+            local key = GetBindingKey(bindName)
+            if key then
+                local slot = def.startSlot + i - 1
+                local slotType, id = GetActionInfo(slot)
+                local spellID
+                if slotType == "spell" then
+                    spellID = id
+                elseif slotType == "macro" and id then
+                    -- GetMacroSpell works for macro-index based entries.
+                    -- For direct spell macros, GetActionInfo returns the spell ID as id.
+                    local macroSpell = GetMacroSpell(id)
+                    spellID = macroSpell or (id > 0 and id) or nil
+                end
+                if spellID then
+                    local formatted = FormatKeybindKey(key)
+                    if not _cdmKeybindCache[spellID] then
+                        _cdmKeybindCache[spellID] = formatted
+                    end
+                    local name = C_Spell.GetSpellName and C_Spell.GetSpellName(spellID)
+                    if name and not _cdmKeybindCache[name] then
+                        _cdmKeybindCache[name] = formatted
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- Apply the current cache to all visible CDM icon keybind texts
+local function ApplyCachedKeybinds()
+    for barKey, icons in pairs(cdmBarIcons) do
+        local bd = barDataByKey[barKey]
+        for _, icon in ipairs(icons) do
+            if icon._keybindText then
+                if bd and bd.showKeybind and icon._spellID then
+                    local key = _cdmKeybindCache[icon._spellID]
+                    local name = C_Spell.GetSpellName and C_Spell.GetSpellName(icon._spellID)
+                    if not key and name then key = _cdmKeybindCache[name] end
+                    if key then
+                        icon._keybindText:SetText(key)
+                        icon._keybindText:Show()
+                    else
+                        icon._keybindText:Hide()
+                    end
+                else
+                    icon._keybindText:Hide()
+                end
+            end
+        end
+    end
+end
+
+-- Public entry point: rebuild cache then apply. Defers if in combat.
+local function UpdateCDMKeybinds()
+    if _inCombat then
+        _keybindRebuildPending = true
+        return
+    end
+    _keybindRebuildPending = false
+    RebuildKeybindCache()
+    _keybindCacheReady = true
+    -- Defer apply by one frame so the Blizzard tick has populated icon._spellID
+    C_Timer.After(0, ApplyCachedKeybinds)
+end
+ns.UpdateCDMKeybinds = UpdateCDMKeybinds
+-- Expose apply-only for the tick loop (new spellID assigned to an icon mid-session)
+ns.ApplyCachedKeybinds = ApplyCachedKeybinds
+ns.CDMKeybindCache = _cdmKeybindCache
+
 BuildAllCDMBars = function()
     local p = ECME.db.profile
     if not p.cdmBars.enabled then
@@ -3390,6 +3715,7 @@ BuildAllCDMBars = function()
         LayoutCDMBar(barData.key)
     end
     _CDMApplyVisibility()
+    UpdateCDMKeybinds()
 
     -- Batch-apply pending cooldown font styling (single deferred call, no per-icon closures)
     C_Timer.After(0, function()
@@ -4252,51 +4578,9 @@ function ECME:OnEnable()
     _playerRace = select(2, UnitRace("player"))
     _playerClass = select(2, UnitClass("player"))
 
-    -- Minimap button (shared across all Ellesmere addons ÃƒÂ¯Ã‚Â¿Ã‚Â½ first to load wins)
-    if not _EllesmereUI_MinimapRegistered then
-        local ok, LDB = pcall(LibStub, "LibDataBroker-1.1")
-        local ok2, LDBIcon = pcall(LibStub, "LibDBIcon-1.0")
-        if ok and ok2 and LDB and LDBIcon then
-            local dataObj = LDB:NewDataObject("EllesmereUI", {
-                type = "launcher",
-                icon = "Interface\\AddOns\\EllesmereUI\\media\\eg-logo.tga",
-                OnClick = function(self, button)
-                    if InCombatLockdown() then return end
-                    if button == "LeftButton" then
-                        if EllesmereUI then EllesmereUI:Toggle() end
-                    elseif button == "RightButton" then
-                        if EllesmereUI and EllesmereUI._openUnlockMode then
-                            EllesmereUI._openUnlockMode()
-                        end
-                    elseif button == "MiddleButton" then
-                        if not EllesmereUIDB then EllesmereUIDB = {} end
-                        EllesmereUIDB.showMinimapButton = false
-                        if LDBIcon:IsRegistered("EllesmereUI") then
-                            local btn = LDBIcon:GetMinimapButton("EllesmereUI")
-                            if btn and btn.db then btn.db.hide = true end
-                            LDBIcon:Hide("EllesmereUI")
-                        end
-                        local rl = EllesmereUI and EllesmereUI._widgetRefreshList
-                        if rl then for i = 1, #rl do rl[i]() end end
-                    end
-                end,
-                OnTooltipShow = function(tt)
-                    tt:AddLine("|cff0cd29fEllesmereUI|r")
-                    tt:AddLine("|cff0cd29dLeft-click:|r |cffE0E0E0Toggle EllesmereUI|r")
-                    tt:AddLine("|cff0cd29dRight-click:|r |cffE0E0E0Enter Unlock Mode|r")
-                    tt:AddLine("|cff0cd29dMiddle-click:|r |cffE0E0E0Hide Minimap Button|r")
-                end,
-            })
-            if dataObj then
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                if not EllesmereUIDB.minimapIcon then EllesmereUIDB.minimapIcon = {} end
-                if EllesmereUIDB.showMinimapButton == false then
-                    EllesmereUIDB.minimapIcon.hide = true
-                end
-                LDBIcon:Register("EllesmereUI", dataObj, EllesmereUIDB.minimapIcon)
-                _EllesmereUI_MinimapRegistered = true
-            end
-        end
+    -- Minimap button (handled by parent addon)
+    if not _EllesmereUI_MinimapRegistered and EllesmereUI and EllesmereUI.CreateMinimapButton then
+        EllesmereUI.CreateMinimapButton()
     end
 
     -- Enable CDM cooldown viewer (keep Blizzard CDM running in background
@@ -4367,6 +4651,10 @@ function ECME:CDMFinishSetup()
         end
     end)
 
+    -- Deferred keybind update: wait 3s so Blizzard's hotkey update cycle
+    -- has fully run before we read HotKey text from button frames
+    C_Timer.After(3, UpdateCDMKeybinds)
+
     -- CDM update tick frame
     if not self._cdmTickFrame then
         self._cdmTickFrame = CreateFrame("Frame")
@@ -4395,6 +4683,8 @@ eventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 eventFrame:RegisterEvent("PLAYER_LOGOUT")
 eventFrame:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW")
 eventFrame:RegisterEvent("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE")
+eventFrame:RegisterEvent("UPDATE_BINDINGS")
+eventFrame:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 local _unitAuraTimer = nil
 eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo)
     if not ECME.db then return end
@@ -4413,6 +4703,10 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo)
         OnProcGlowEvent(event, unit)  -- unit = spellID (first arg after event)
         return
     end
+    if event == "UPDATE_BINDINGS" or event == "ACTIONBAR_SLOT_CHANGED" then
+        C_Timer.After(0.5, UpdateCDMKeybinds)  -- defer so action slots are fully populated
+        return
+    end
     if event == "GROUP_ROSTER_UPDATE" then
         -- Invalidate party/player frame caches and re-anchor
         _cachedPartyFrame = nil
@@ -4427,6 +4721,10 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo)
         -- Flush any deferred TBB rebuild that was queued during combat
         if event == "PLAYER_REGEN_ENABLED" and ns.IsTBBRebuildPending and ns.IsTBBRebuildPending() then
             ns.BuildTrackedBuffBars()
+        end
+        -- Flush deferred keybind rebuild that was blocked during combat
+        if event == "PLAYER_REGEN_ENABLED" and _keybindRebuildPending then
+            UpdateCDMKeybinds()
         end
         -- Refresh resolved aura IDs now that names are readable again
         if event == "PLAYER_REGEN_ENABLED" then
@@ -4483,6 +4781,124 @@ SlashCmdList.ECME = function(msg)
     if EllesmereUI and EllesmereUI.ShowModule then
         EllesmereUI:ShowModule("EllesmereUICooldownManager")
     end
+end
+
+-------------------------------------------------------------------------------
+--  /cdmstacks debug — dumps stack count data for all visible CDM icons
+-------------------------------------------------------------------------------
+SLASH_CDMSTACKS1 = "/cdmstacks"
+SlashCmdList.CDMSTACKS = function()
+    local p = function(...) print("|cff0cd29f[CDM Stacks]|r", ...) end
+    p("--- Stack Count Debug ---")
+
+    local BLIZZ = {cooldowns="EssentialCooldownViewer", utility="UtilityCooldownViewer", buffs="BuffIconCooldownViewer"}
+    local profile = ECME.db and ECME.db.profile
+    if not profile or not profile.cdmBars then p("No CDM bars configured"); return end
+
+    for _, barData in ipairs(profile.cdmBars.bars) do
+        local key = barData.key
+        local blizzName = BLIZZ[key]
+        local blizzFrame = blizzName and _G[blizzName]
+        if blizzFrame then
+
+        p("|cff00ccff" .. key .. "|r  showStackCount=" .. tostring(barData.showStackCount))
+
+        for i = 1, blizzFrame:GetNumChildren() do
+            local child = select(i, blizzFrame:GetChildren())
+            if child and child.Icon and child.Icon:GetTexture() then
+                local cdID = child.cooldownID
+                if not cdID and child.cooldownInfo then cdID = child.cooldownInfo.cooldownID end
+
+                local resolvedSid
+                if cdID and C_CooldownViewer and C_CooldownViewer.GetCooldownViewerCooldownInfo then
+                    local info = C_CooldownViewer.GetCooldownViewerCooldownInfo(cdID)
+                    if info then resolvedSid = info.overrideSpellID or info.spellID end
+                end
+
+                local spellName = resolvedSid and C_Spell.GetSpellName(resolvedSid) or "?"
+                local isAura = child.wasSetFromAura == true or child.auraInstanceID ~= nil
+                local auraInstID = child.auraInstanceID
+                local auraUnit = child.auraDataUnit or "player"
+
+                -- Check Applications frame
+                local appsFrame = child.Applications
+                local appsShown = appsFrame and appsFrame:IsShown()
+                local appsTxt = nil
+                if appsFrame and appsFrame.Applications then
+                    local ok, t = pcall(appsFrame.Applications.GetText, appsFrame.Applications)
+                    if ok then appsTxt = tostring(t) end
+                end
+
+                -- Check GetPlayerAuraBySpellID
+                local auraApps = nil
+                if resolvedSid then
+                    local ok, aura = pcall(C_UnitAuras.GetPlayerAuraBySpellID, resolvedSid)
+                    if ok and aura then
+                        local a = aura.applications
+                        if a and not (issecretvalue and issecretvalue(a)) then
+                            auraApps = a
+                        else
+                            auraApps = "secret"
+                        end
+                    end
+                end
+
+                -- Check GetAuraDataByAuraInstanceID
+                local instApps = nil
+                if auraInstID then
+                    local ok, ad = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, auraUnit, auraInstID)
+                    if ok and ad then
+                        local a = ad.applications
+                        if a and not (issecretvalue and issecretvalue(a)) then
+                            instApps = a
+                        else
+                            instApps = "secret"
+                        end
+                    end
+                end
+
+                -- Check GetSpellCastCount (for spells that track stacks via cast count)
+                local castCount = nil
+                if resolvedSid and C_Spell.GetSpellCastCount then
+                    local ok, cc = pcall(C_Spell.GetSpellCastCount, resolvedSid)
+                    if ok and cc and not (issecretvalue and issecretvalue(cc)) then
+                        castCount = cc
+                    end
+                end
+
+                p("  " .. (spellName or "?") .. " (sid=" .. tostring(resolvedSid) .. ")"
+                    .. " isAura=" .. tostring(isAura)
+                    .. " auraInstID=" .. tostring(auraInstID)
+                    .. " appsShown=" .. tostring(appsShown)
+                    .. " appsTxt=" .. tostring(appsTxt)
+                    .. " auraApps=" .. tostring(auraApps)
+                    .. " instApps=" .. tostring(instApps)
+                    .. " castCount=" .. tostring(castCount))
+            end
+        end
+
+        end -- if blizzFrame
+    end
+
+    -- Scan all player auras for stacking buffs (helps identify buff IDs)
+    p("|cff00ccffPlayer auras with stacks:|r")
+    local foundAny = false
+    for i = 1, 40 do
+        local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
+        if not aura then break end
+        local apps = aura.applications
+        if apps and not (issecretvalue and issecretvalue(apps)) and apps > 0 then
+            local aName = aura.name or "?"
+            local aSid = aura.spellId or 0
+            if not (issecretvalue and issecretvalue(aName)) and not (issecretvalue and issecretvalue(aSid)) then
+                p("  " .. tostring(aName) .. " (sid=" .. tostring(aSid) .. ") apps=" .. tostring(apps))
+                foundAny = true
+            end
+        end
+    end
+    if not foundAny then p("  (none)") end
+
+    p("--- End ---")
 end
 
 

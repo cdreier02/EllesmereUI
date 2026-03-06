@@ -420,6 +420,217 @@ local BLIZZARD_BARS_TO_HIDE = {
     "PetActionBar",
 }
 
+-------------------------------------------------------------------------------
+--  Secure Setup Handler
+--  Performs protected frame operations (SetParent, SetPoint, SetSize, Show/Hide)
+--  from within a restricted secure snippet, allowing them to run even during
+--  combat lockdown. Normal Lua cannot call these on protected frames in combat,
+--  but a SecureHandlerAttributeTemplate snippet can.
+--
+--  Usage:
+--   1. Call SecureSetupHandler_PrepareRefs() once after bar frames are created.
+--   2. Call SecureSetupHandler_EncodeLayout() to write button layout as attributes.
+--   3. Call SecureSetupHandler_Execute() to trigger the snippet.
+-------------------------------------------------------------------------------
+local _secureHandler = CreateFrame("Frame", "EABSecureSetupHandler", UIParent, "SecureHandlerAttributeTemplate")
+
+-- The secure snippet reads encoded button data and applies SetParent + layout.
+-- Attribute format per button slot:
+--   "btn-N" = "barref|x|y|w|h|show"  (show = "1" or "0")
+-- Bar frame refs are registered as "bar-{key}".
+-- Hidden parent ref is registered as "hiddenParent".
+-- UIParent ref is registered as "uiParent".
+-- Blizzard bar refs are registered as "blizzbar-{name}".
+-- Trigger: setting "do-setup" to any value runs the full setup.
+_secureHandler:SetAttribute("_onattributechanged", [=[
+    if name ~= "do-setup" then return end
+
+    -- Step 1: Reparent Blizzard buttons to UIParent (extract from Blizzard bars)
+    local uiParent = self:GetFrameRef("uiParent")
+    local btnCount = self:GetAttribute("btn-count") or 0
+    for slot = 1, btnCount do
+        local btnRef = self:GetFrameRef("btn-" .. slot)
+        if btnRef then
+            btnRef:SetParent(uiParent)
+        end
+    end
+
+    -- Step 2: Hide Blizzard bar frames
+    local hiddenParent = self:GetFrameRef("hiddenParent")
+    local blizzCount = self:GetAttribute("blizzbar-count") or 0
+    for i = 1, blizzCount do
+        local barRef = self:GetFrameRef("blizzbar-" .. i)
+        if barRef then
+            barRef:SetParent(hiddenParent)
+        end
+    end
+
+    -- Step 3: Reparent buttons to our bar frames and apply layout
+    for slot = 1, btnCount do
+        local data = self:GetAttribute("layout-" .. slot)
+        if data then
+            local barKey, x, y, w, h, show, actionSlot = strsplit("|", data)
+            local btnRef = self:GetFrameRef("btn-" .. slot)
+            local barRef = self:GetFrameRef("bar-" .. barKey)
+            if btnRef and barRef then
+                btnRef:SetParent(barRef)
+                btnRef:SetID(0)
+                btnRef:ClearAllPoints()
+                btnRef:SetPoint("TOPLEFT", barRef, "TOPLEFT", tonumber(x) or 0, tonumber(y) or 0)
+                btnRef:SetWidth(tonumber(w) or 45)
+                btnRef:SetHeight(tonumber(h) or 45)
+                if actionSlot and actionSlot ~= "" and actionSlot ~= "0" then
+                    btnRef:SetAttribute("action", tonumber(actionSlot))
+                end
+                if show == "1" then
+                    btnRef:Show()
+                else
+                    btnRef:Hide()
+                end
+            end
+        end
+    end
+
+    -- Step 4: Size and position our bar frames
+    local barFrameCount = self:GetAttribute("barframe-count") or 0
+    for i = 1, barFrameCount do
+        local frameData = self:GetAttribute("barframe-" .. i)
+        if frameData then
+            local barKey, w, h, point, relPoint, x, y = strsplit("|", frameData)
+            local barRef = self:GetFrameRef("bar-" .. barKey)
+            local uip = self:GetFrameRef("uiParent")
+            if barRef and uip then
+                barRef:SetWidth(tonumber(w) or 1)
+                barRef:SetHeight(tonumber(h) or 1)
+                barRef:ClearAllPoints()
+                barRef:SetPoint(point or "CENTER", uip, relPoint or "CENTER", tonumber(x) or 0, tonumber(y) or 0)
+            end
+        end
+    end
+
+    -- Step 5: Set up MainBar paging attributes on buttons.
+    -- _childupdate-offset can only be set from the restricted environment on
+    -- protected frames, so we do it here rather than from normal Lua.
+    -- For MainBar buttons, actionSlot encodes the button index (1-12).
+    local mainOffset = self:GetAttribute("mainbar-offset") or 0
+    for slot = 1, btnCount do
+        local data = self:GetAttribute("layout-" .. slot)
+        if data then
+            local barKey, _, _, _, _, _, actionSlot = strsplit("|", data)
+            if barKey == "MainBar" then
+                local idx = tonumber(actionSlot) or 0
+                if idx > 0 then
+                    local btnRef = self:GetFrameRef("btn-" .. slot)
+                    if btnRef then
+                        btnRef:SetAttribute("index", idx)
+                        btnRef:SetAttribute("_childupdate-offset", [[
+                            local offset = message or 0
+                            local id = self:GetAttribute("index") + offset
+                            if self:GetAttribute("action") ~= id then
+                                self:SetAttribute("action", id)
+                            end
+                        ]])
+                        btnRef:SetAttribute("action", idx + mainOffset)
+                    end
+                end
+            end
+        end
+    end
+]=])
+
+-- Register all Blizzard buttons and bar frames as refs on the secure handler.
+-- Must be called after bar frames are created (after CreateBarFrame runs).
+local _secureRefsReady = false
+local function SecureSetupHandler_PrepareRefs()
+    if _secureRefsReady then return end
+    _secureRefsReady = true
+
+    _secureHandler:SetFrameRef("uiParent", UIParent)
+    _secureHandler:SetFrameRef("hiddenParent", hiddenParent)
+
+    -- Register all Blizzard buttons
+    local btnIdx = 0
+    for _, info in ipairs(BAR_CONFIG) do
+        if info.blizzBtnPrefix and not info.isStance and not info.isPetBar then
+            for i = 1, info.count do
+                local btn = _G[info.blizzBtnPrefix .. i]
+                if btn then
+                    btnIdx = btnIdx + 1
+                    _secureHandler:SetFrameRef("btn-" .. btnIdx, btn)
+                    -- Store mapping: blizzBtnPrefix+i -> slot index
+                    btn._secureSlotIdx = btnIdx
+                end
+            end
+        elseif info.isStance then
+            for i = 1, info.count do
+                local btn = _G["StanceButton" .. i]
+                if btn then
+                    btnIdx = btnIdx + 1
+                    _secureHandler:SetFrameRef("btn-" .. btnIdx, btn)
+                    btn._secureSlotIdx = btnIdx
+                end
+            end
+        elseif info.isPetBar then
+            for i = 1, info.count do
+                local btn = _G["PetActionButton" .. i]
+                if btn then
+                    btnIdx = btnIdx + 1
+                    _secureHandler:SetFrameRef("btn-" .. btnIdx, btn)
+                    btn._secureSlotIdx = btnIdx
+                end
+            end
+        end
+    end
+    _secureHandler:SetAttribute("btn-count", btnIdx)
+
+    -- Register Blizzard bar frames to hide
+    local blizzIdx = 0
+    for _, name in ipairs(BLIZZARD_BARS_TO_HIDE) do
+        local bar = _G[name]
+        if bar then
+            blizzIdx = blizzIdx + 1
+            _secureHandler:SetFrameRef("blizzbar-" .. blizzIdx, bar)
+        end
+    end
+    -- Also hide StatusTrackingBarManager if not using Blizzard data bars
+    if StatusTrackingBarManager and not (EAB.db and EAB.db.profile.useBlizzardDataBars) then
+        blizzIdx = blizzIdx + 1
+        _secureHandler:SetFrameRef("blizzbar-" .. blizzIdx, StatusTrackingBarManager)
+    end
+    _secureHandler:SetAttribute("blizzbar-count", blizzIdx)
+end
+
+-- Register our bar frames as refs. Called after CreateBarFrame.
+local function SecureSetupHandler_RegisterBarFrame(key, frame)
+    _secureHandler:SetFrameRef("bar-" .. key, frame)
+end
+
+-- Encode layout data for all buttons as attributes, then trigger the snippet.
+-- layoutData: table of { slot = { barKey, x, y, w, h, show, actionSlot } }
+-- barFrameData: table of { key, w, h, point, relPoint, x, y }
+local function SecureSetupHandler_Execute(layoutData, barFrameData)
+    -- Encode button layout
+    for slot, d in pairs(layoutData) do
+        local actionSlot = d.actionSlot or 0
+        _secureHandler:SetAttribute("layout-" .. slot,
+            d.barKey .. "|" .. d.x .. "|" .. d.y .. "|" .. d.w .. "|" .. d.h .. "|" .. (d.show and "1" or "0") .. "|" .. actionSlot)
+    end
+    -- Encode bar frame sizes/positions
+    local barFrameCount = 0
+    for _, d in ipairs(barFrameData) do
+        barFrameCount = barFrameCount + 1
+        _secureHandler:SetAttribute("barframe-" .. barFrameCount,
+            d.key .. "|" .. d.w .. "|" .. d.h .. "|" .. d.point .. "|" .. d.relPoint .. "|" .. d.x .. "|" .. d.y)
+    end
+    _secureHandler:SetAttribute("barframe-count", barFrameCount)
+    -- Pass current MainBar page offset so the snippet can set initial action slots
+    local mainFrame = barFrames["MainBar"]
+    local mainOffset = mainFrame and (mainFrame:GetAttribute("actionOffset") or 0) or 0
+    _secureHandler:SetAttribute("mainbar-offset", mainOffset)
+    -- Trigger the snippet
+    _secureHandler:SetAttribute("do-setup", GetTime())
+end
+
 local function HideBlizzardBars()
     -- First, extract all Blizzard buttons we want to reuse by reparenting
     -- them to UIParent temporarily. This must happen BEFORE we hide the
@@ -545,9 +756,13 @@ local BINDING_MAP = {
 }
 
 -- Get or create an action button for a given slot
-local function GetOrCreateButton(slot, parent, info, index)
+-- skipProtected: if true, skip SetParent/SetID/Show (used during combat reload;
+-- the secure handler will perform those operations instead)
+local function GetOrCreateButton(slot, parent, info, index, skipProtected)
     if allButtons[slot] then
-        allButtons[slot]:SetParent(parent)
+        if not skipProtected then
+            allButtons[slot]:SetParent(parent)
+        end
         return allButtons[slot]
     end
 
@@ -560,13 +775,16 @@ local function GetOrCreateButton(slot, parent, info, index)
     end
 
     if btn then
-        -- Reparent the Blizzard button to our bar frame
-        btn:SetParent(parent)
-        btn:SetID(0)  -- Reset ID to avoid Blizzard paging interference
-        btn.Bar = nil  -- Drop reference to Blizzard bar parent
-        btn:Show()
+        if not skipProtected then
+            -- Reparent the Blizzard button to our bar frame
+            btn:SetParent(parent)
+            btn:SetID(0)  -- Reset ID to avoid Blizzard paging interference
+            btn.Bar = nil  -- Drop reference to Blizzard bar parent
+            btn:Show()
+        end
     else
         -- Create a new button (for slots 73-132 that don't have Blizzard equivalents)
+        -- These are our own frames, not protected, so CreateFrame is always safe
         local name = "EABButton" .. slot
         btn = CreateFrame("CheckButton", name, parent, "ActionBarButtonTemplate")
         btn:SetAttribute("action", slot)
@@ -661,13 +879,15 @@ local function CreateBarFrame(info)
     end
 
     barFrames[key] = frame
+    -- Register with secure handler so it can reparent buttons to this frame
+    SecureSetupHandler_RegisterBarFrame(key, frame)
     return frame
 end
 
 -------------------------------------------------------------------------------
 --  Bar Setup â€” creates frames and buttons for each bar
 -------------------------------------------------------------------------------
-local function SetupBar(info)
+local function SetupBar(info, skipProtected)
     local key = info.key
     local frame = CreateBarFrame(info)
     local buttons = {}
@@ -677,7 +897,7 @@ local function SetupBar(info)
         for i = 1, info.count do
             local btn = _G["StanceButton" .. i]
             if btn then
-                btn:SetParent(frame)
+                if not skipProtected then btn:SetParent(frame) end
                 buttons[i] = btn
             end
         end
@@ -686,7 +906,7 @@ local function SetupBar(info)
         for i = 1, info.count do
             local btn = _G["PetActionButton" .. i]
             if btn then
-                btn:SetParent(frame)
+                if not skipProtected then btn:SetParent(frame) end
                 buttons[i] = btn
             end
         end
@@ -700,33 +920,38 @@ local function SetupBar(info)
                 -- Main bar buttons: reuse ActionButton1-12
                 btn = _G["ActionButton" .. i]
                 if btn then
-                    btn:SetParent(frame)
-                    btn:SetID(0)
-                    btn.Bar = nil
+                    if not skipProtected then
+                        btn:SetParent(frame)
+                        btn:SetID(0)
+                        btn.Bar = nil
+                    end
 
-                    -- Set up _childupdate-offset handler
-                    btn:SetAttribute("index", i)
-                    btn:SetAttribute("_childupdate-offset", [[
-                        local offset = message or 0
-                        local id = self:GetAttribute("index") + offset
-                        if self:GetAttribute("action") ~= id then
-                            self:SetAttribute("action", id)
-                        end
-                    ]])
-
-                    -- Initial action: use current offset (state driver may have already fired)
-                    local curOffset = frame:GetAttribute("actionOffset") or 0
-                    btn:SetAttribute("action", i + curOffset)
+                    -- SetAttribute is allowed in combat on non-protected frames,
+                    -- but ActionButton1 is protected. Defer to secure handler.
+                    if not skipProtected then
+                        btn:SetAttribute("index", i)
+                        btn:SetAttribute("_childupdate-offset", [[
+                            local offset = message or 0
+                            local id = self:GetAttribute("index") + offset
+                            if self:GetAttribute("action") ~= id then
+                                self:SetAttribute("action", id)
+                            end
+                        ]])
+                        local curOffset = frame:GetAttribute("actionOffset") or 0
+                        btn:SetAttribute("action", i + curOffset)
+                    end
                 end
             else
-                btn = GetOrCreateButton(slot, frame, info, i)
+                btn = GetOrCreateButton(slot, frame, info, i, skipProtected)
                 if btn and not info.isStance then
-                    btn:SetAttribute("action", slot)
+                    if not skipProtected then
+                        btn:SetAttribute("action", slot)
+                    end
                 end
             end
 
             if btn then
-                -- Enable clicks on all mouse buttons and mousewheel
+                -- RegisterForClicks and EnableMouseWheel are not protected
                 if btn.RegisterForClicks then
                     btn:RegisterForClicks("AnyUp", "AnyDown")
                 end
@@ -908,6 +1133,91 @@ local function SnapForScale(x, barScale)
     if m == 1 then return x end
     local y = m > 1 and m or -m
     return x - x % (x < 0 and y or -y)
+end
+
+
+-- Compute layout for a bar and return a table of per-button data.
+-- Returns: { [i] = { x, y, w, h, show } }, frameW, frameH
+local function ComputeBarLayout(key)
+    local info = BAR_LOOKUP[key]
+    if not info then return {}, 1, 1 end
+    local buttons = barButtons[key]
+    if not buttons then return {}, 1, 1 end
+
+    local s = EAB.db.profile.bars[key]
+    local barScale = s.barScale or 1.0
+    if barScale < 0.1 then barScale = 0.1 end
+    local numIcons = s.overrideNumIcons or s.numIcons or info.count
+    if numIcons < 1 then numIcons = info.count end
+    if numIcons > info.count then numIcons = info.count end
+    if info.isStance then numIcons = GetNumShapeshiftForms() or info.count end
+    if info.isPetBar then numIcons = GetNumPetActionSlots and GetNumPetActionSlots() or info.count end
+
+    local numRows = s.overrideNumRows or s.numRows or 1
+    if numRows < 1 then numRows = 1 end
+    local stride = ceil(numIcons / numRows)
+    local padding = SnapForScale(s.buttonPadding or 2, barScale)
+    local isVertical = (s.orientation == "vertical")
+    local growUp = (s.growDirection or "up") == "up"
+    local shape = s.buttonShape or "none"
+
+    local base = barBaseSize[key]
+    local btnW = base and base.w or 45
+    local btnH = base and base.h or 45
+    if shape ~= "none" and shape ~= "cropped" then
+        btnW = btnW + SHAPE_BTN_EXPAND
+        btnH = btnH + SHAPE_BTN_EXPAND
+    end
+    if shape == "cropped" then btnH = btnH * 0.80 end
+    btnW = SnapForScale(btnW, barScale)
+    btnH = SnapForScale(btnH, barScale)
+    local stepW = btnW + padding
+    local stepH = btnH + padding
+
+    local showEmpty = s.alwaysShowButtons
+    if showEmpty == nil then showEmpty = true end
+    if info.isStance or info.isPetBar then showEmpty = false end
+
+    local result = {}
+    for i = 1, info.count do
+        local btn = buttons[i]
+        if not btn then break end
+        if i > numIcons then
+            result[i] = { x = 0, y = 0, w = btnW, h = btnH, show = false }
+        else
+            local col, row
+            if isVertical then
+                col = floor((i - 1) / stride)
+                row = (i - 1) % stride
+            else
+                col = (i - 1) % stride
+                row = floor((i - 1) / stride)
+            end
+            local xOff = col * stepW
+            local yOff
+            if isVertical then
+                yOff = -(row * stepH)
+            else
+                if growUp then
+                    local flippedRow = (numRows - 1) - row
+                    yOff = -(flippedRow * stepH)
+                else
+                    yOff = -(row * stepH)
+                end
+            end
+            local show = true
+            if not showEmpty and not gridShown and not ButtonHasAction(btn, info.blizzBtnPrefix) then
+                show = false
+            end
+            result[i] = { x = xOff, y = yOff, w = btnW, h = btnH, show = show }
+        end
+    end
+
+    local totalCols = isVertical and numRows or stride
+    local totalRows = isVertical and stride or numRows
+    local frameW = totalCols * btnW + (totalCols - 1) * padding
+    local frameH = totalRows * btnH + (totalRows - 1) * padding
+    return result, max(frameW, 1), max(frameH, 1)
 end
 
 local function LayoutBar(key)
@@ -3162,8 +3472,6 @@ end
 --  Apply All â€” orchestrates full visual application
 -------------------------------------------------------------------------------
 local function ApplyAll()
-    if InCombatLockdown() then return end
-
     -- Restore any strata raised during a drag that wasn't cleaned up
     if _dragVisible then
         _dragVisible = false
@@ -3173,13 +3481,15 @@ local function ApplyAll()
         wipe(_dragStrataCache)
     end
 
+    local inCombat = InCombatLockdown()
+
     for _, info in ipairs(BAR_CONFIG) do
         local key = info.key
         local s = EAB.db.profile.bars[key]
         local frame = barFrames[key]
 
-        -- Bar enabled/disabled toggle
-        if frame and s then
+        -- Bar enabled/disabled toggle (protected frames can't be shown/hidden in combat)
+        if frame and s and not inCombat then
             if s.enabled == false then
                 frame:Hide()
             elseif not s.alwaysHidden then
@@ -3187,22 +3497,24 @@ local function ApplyAll()
             end
         end
 
-        EAB:ApplyScaleForBar(key)
-        LayoutBar(key)
+        if not inCombat then
+            EAB:ApplyScaleForBar(key)
+            LayoutBar(key)
+        end
         EAB:ApplyBordersForBar(key)
-        EAB:ApplyShapesForBar(key)
+        if not inCombat then EAB:ApplyShapesForBar(key) end
         EAB:ApplyFontsForBar(key)
         EAB:ApplyBackgroundForBar(key)
-        EAB:ApplyAlwaysShowButtons(key)
-        EAB:ApplyClickThroughForBar(key)
+        if not inCombat then EAB:ApplyAlwaysShowButtons(key) end
+        if not inCombat then EAB:ApplyClickThroughForBar(key) end
     end
 
     EAB:ApplyPushedTextures()
     EAB:ApplyHighlightTextures()
     EAB:ApplyCooldownEdge()
     EAB:ApplyMiscTextures()
-    EAB:ApplyCombatVisibility()
-    EAB:ApplyAlwaysHidden()
+    if not inCombat then EAB:ApplyCombatVisibility() end
+    if not inCombat then EAB:ApplyAlwaysHidden() end
     EAB:RefreshMouseover()
     EAB:RefreshProcGlows()
 end
@@ -3236,56 +3548,11 @@ local function RestoreBarPositions()
 end
 
 -------------------------------------------------------------------------------
---  Minimap Button (shared across Ellesmere addons)
+--  Minimap Button (handled by parent addon)
 -------------------------------------------------------------------------------
 local function RegisterMinimapButton()
-    if _EllesmereUI_MinimapRegistered then return end
-    local LDB = LibStub("LibDataBroker-1.1", true)
-    local LDBIcon = LibStub("LibDBIcon-1.0", true)
-    if not LDB or not LDBIcon then return end
-
-    -- Only register if not already registered by another Ellesmere addon
-    if LDB:GetDataObjectByName("EllesmereUI") then return end
-
-    local dataObj = LDB:NewDataObject("EllesmereUI", {
-        type = "launcher",
-        icon = "Interface\\AddOns\\EllesmereUI\\media\\eg-logo.tga",
-        OnClick = function(_, button)
-            if InCombatLockdown() then return end
-            if button == "LeftButton" then
-                if EllesmereUI then EllesmereUI:Toggle() end
-            elseif button == "RightButton" then
-                if EllesmereUI and EllesmereUI._openUnlockMode then
-                    EllesmereUI._openUnlockMode()
-                end
-            elseif button == "MiddleButton" then
-                if not EllesmereUIDB then EllesmereUIDB = {} end
-                EllesmereUIDB.showMinimapButton = false
-                if LDBIcon:IsRegistered("EllesmereUI") then
-                    local btn = LDBIcon:GetMinimapButton("EllesmereUI")
-                    if btn and btn.db then btn.db.hide = true end
-                    LDBIcon:Hide("EllesmereUI")
-                end
-                local rl = EllesmereUI and EllesmereUI._widgetRefreshList
-                if rl then for i = 1, #rl do rl[i]() end end
-            end
-        end,
-        OnTooltipShow = function(tt)
-            tt:AddLine("|cff0cd29fEllesmereUI|r")
-            tt:AddLine("|cff0cd29dLeft-click:|r |cffE0E0E0Toggle EllesmereUI|r")
-            tt:AddLine("|cff0cd29dRight-click:|r |cffE0E0E0Enter Unlock Mode|r")
-            tt:AddLine("|cff0cd29dMiddle-click:|r |cffE0E0E0Hide Minimap Button|r")
-        end,
-    })
-
-    if dataObj then
-        if not EllesmereUIDB then EllesmereUIDB = {} end
-        if not EllesmereUIDB.minimapIcon then EllesmereUIDB.minimapIcon = {} end
-        if EllesmereUIDB.showMinimapButton == false then
-            EllesmereUIDB.minimapIcon.hide = true
-        end
-        LDBIcon:Register("EllesmereUI", dataObj, EllesmereUIDB.minimapIcon)
-        _EllesmereUI_MinimapRegistered = true
+    if not _EllesmereUI_MinimapRegistered and EllesmereUI and EllesmereUI.CreateMinimapButton then
+        EllesmereUI.CreateMinimapButton()
     end
 end
 
@@ -3517,50 +3784,175 @@ end
 
 -- The actual bar creation, positioning, and event registration.
 function EAB:FinishSetup()
-    -- Hide Blizzard bars (extracts buttons first, then hides parents)
-    HideBlizzardBars()
+    -- Prepare secure handler refs (must happen before any setup path)
+    SecureSetupHandler_PrepareRefs()
 
-    -- Create our custom bars and lay out buttons so frames have correct sizes
-    -- BEFORE restoring positions (positions use CENTER anchor, so frame size matters)
-    for _, info in ipairs(BAR_CONFIG) do
-        SetupBar(info)
-        -- Apply scale before layout so frame size accounts for it
-        self:ApplyScaleForBar(info.key)
-        LayoutBar(info.key)
-    end
+    local function DoSetupSecure()
+        -- Non-protected setup: create bar frames, compute layout, register events.
+        -- Protected operations (SetParent, SetPoint on Blizzard buttons) are
+        -- dispatched through the secure handler so they work even in combat.
 
-    -- Restore saved positions
-    RestoreBarPositions()
+        local inCombat = InCombatLockdown()
 
-    -- Phase 2: Re-anchor vehicle exit button now that bar 1 exists
-    do
-        local btn = MainMenuBarVehicleLeaveButton
-        local bar1 = barFrames["MainBar"]
-        if btn and bar1 then
-            btn:ClearAllPoints()
-            btn:SetPoint("BOTTOM", bar1, "TOPRIGHT", 0, 4)
+        if not inCombat then
+            -- Normal load: use the direct path (all protected ops are fine)
+            HideBlizzardBars()
+            for _, info in ipairs(BAR_CONFIG) do
+                SetupBar(info, false)
+                self:ApplyScaleForBar(info.key)
+                LayoutBar(info.key)
+            end
+            RestoreBarPositions()
+            -- Re-anchor vehicle exit button
+            do
+                local btn = MainMenuBarVehicleLeaveButton
+                local bar1 = barFrames["MainBar"]
+                if btn and bar1 then
+                    btn:ClearAllPoints()
+                    btn:SetPoint("BOTTOM", bar1, "TOPRIGHT", 0, 4)
+                end
+            end
+            -- Set up MainBar paging
+            local mainFrame = barFrames["MainBar"]
+            if mainFrame then
+                local curOffset = mainFrame:GetAttribute("actionOffset") or 0
+                local mainBtns = barButtons["MainBar"]
+                if mainBtns then
+                    for i, btn in ipairs(mainBtns) do
+                        if btn then
+                            btn:SetAttribute("index", i)
+                            btn:SetAttribute("_childupdate-offset", [[
+                                local offset = message or 0
+                                local id = self:GetAttribute("index") + offset
+                                if self:GetAttribute("action") ~= id then
+                                    self:SetAttribute("action", id)
+                                end
+                            ]])
+                            btn:SetAttribute("action", i + curOffset)
+                        end
+                    end
+                end
+            end
+        else
+            -- Combat reload: non-protected setup only; secure handler does the rest.
+            -- Unregister Blizzard bar events (non-protected)
+            for _, name in ipairs(BLIZZARD_BARS_TO_HIDE) do
+                local bar = _G[name]
+                if bar then bar:UnregisterAllEvents() end
+            end
+            if MainActionBarController then MainActionBarController:UnregisterAllEvents() end
+            if not (EAB.db and EAB.db.profile.useBlizzardDataBars) then
+                if StatusTrackingBarManager then
+                    StatusTrackingBarManager:UnregisterAllEvents()
+                end
+            end
+            if MainMenuBarPageNumber then MainMenuBarPageNumber:Hide() end
+            if ActionBarParent then
+                RegisterAttributeDriver(ActionBarParent, "state-visibility", "[vehicleui] show; hide")
+            end
+            if OverrideActionBar then
+                RegisterAttributeDriver(OverrideActionBar, "state-visibility", "[vehicleui] show; hide")
+            end
+            for _, name in ipairs({"MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarRight", "MultiBarLeft", "MultiBar5", "MultiBar6", "MultiBar7"}) do
+                local bar = _G[name]
+                if bar and bar.actionButtons then wipe(bar.actionButtons) end
+            end
+            C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_1", "1")
+            C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_2", "1")
+            C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_3", "1")
+            C_CVar.SetCVar("SHOW_MULTI_ACTIONBAR_4", "1")
+
+            -- Create bar frames and register button refs (no protected ops)
+            for _, info in ipairs(BAR_CONFIG) do
+                SetupBar(info, true)
+                self:ApplyScaleForBar(info.key)
+            end
+
+            -- Compute layout and encode for secure handler
+            local layoutData = {}
+            local barFrameData = {}
+            local positions = EAB.db.profile.barPositions or {}
+
+            for _, info in ipairs(BAR_CONFIG) do
+                local key = info.key
+                local buttons = barButtons[key]
+                local slotOffset = BAR_SLOT_OFFSETS[key] or 0
+                if buttons then
+                    local btnLayout, frameW, frameH = ComputeBarLayout(key)
+                    local pos = positions[key]
+                    local point = pos and pos.point or "CENTER"
+                    local relPoint = pos and pos.relPoint or "CENTER"
+                    local px = pos and pos.x or 0
+                    local py = pos and pos.y or 0
+                    tinsert(barFrameData, { key = key, w = frameW, h = frameH,
+                        point = point, relPoint = relPoint, x = px, y = py })
+
+                    for i, btnData in pairs(btnLayout) do
+                        local btn = buttons[i]
+                        if btn and btn._secureSlotIdx then
+                            local actionSlot = 0
+                            if key == "MainBar" then
+                                -- For MainBar, actionSlot encodes the button index (1-12)
+                                -- so the secure snippet can set up _childupdate-offset paging
+                                actionSlot = i
+                            elseif not info.isStance and not info.isPetBar then
+                                actionSlot = slotOffset + i
+                            end
+                            layoutData[btn._secureSlotIdx] = {
+                                barKey = key,
+                                x = btnData.x, y = btnData.y,
+                                w = btnData.w, h = btnData.h,
+                                show = btnData.show,
+                                actionSlot = actionSlot,
+                            }
+                        end
+                    end
+                end
+            end
+
+            -- Dispatch all protected operations through the secure handler
+            SecureSetupHandler_Execute(layoutData, barFrameData)
         end
-    end
 
-    -- Apply all visual settings
-    C_Timer_After(0.1, function()
-        ApplyAll()
-        UpdateKeybinds()
-        self:HookProcGlow()
-        self:ScanExistingProcs()
-        -- Initial snapshot: trim numIcons for any bars with alwaysShowButtons off
-        for _, info in ipairs(BAR_CONFIG) do
-            if info.barID and info.barID >= 1 and info.barID <= 8 then
-                local s = self.db.profile.bars[info.key]
-                local showEmpty = s and s.alwaysShowButtons
-                if showEmpty == nil then showEmpty = true end
-                if not showEmpty then
-                    self:ApplySmartNumIcons(info.key)
+        -- Visual styling and keybinds: defer to out-of-combat if needed
+        local function DoVisuals()
+            ApplyAll()
+            UpdateKeybinds()
+            self:HookProcGlow()
+            self:ScanExistingProcs()
+            -- Re-anchor vehicle exit button
+            local btn = MainMenuBarVehicleLeaveButton
+            local bar1 = barFrames["MainBar"]
+            if btn and bar1 then
+                btn:ClearAllPoints()
+                btn:SetPoint("BOTTOM", bar1, "TOPRIGHT", 0, 4)
+            end
+            -- Initial snapshot: trim numIcons for bars with alwaysShowButtons off
+            for _, info in ipairs(BAR_CONFIG) do
+                if info.barID and info.barID >= 1 and info.barID <= 8 then
+                    local s = self.db.profile.bars[info.key]
+                    local showEmpty = s and s.alwaysShowButtons
+                    if showEmpty == nil then showEmpty = true end
+                    if not showEmpty then
+                        self:ApplySmartNumIcons(info.key)
+                    end
                 end
             end
         end
-    end)
 
+        if InCombatLockdown() then
+            local f = CreateFrame("Frame")
+            f:RegisterEvent("PLAYER_REGEN_ENABLED")
+            f:SetScript("OnEvent", function(self)
+                self:UnregisterEvent("PLAYER_REGEN_ENABLED")
+                C_Timer_After(0.1, DoVisuals)
+            end)
+        else
+            C_Timer_After(0.1, DoVisuals)
+        end
+    end
+
+    DoSetupSecure()
     -- Attach hover hooks for mouseover
     for _, info in ipairs(BAR_CONFIG) do
         AttachHoverHooks(info.key)
@@ -3711,7 +4103,7 @@ function EAB:FinishSetup()
         ResetDragState()
         C_Timer_After(0.2, function()
             if InCombatLockdown() then return end
-            -- Reset stale flags â€” if we're not actually in a vehicle/housing
+            -- Reset stale flags ├óΓé¼ΓÇ¥ if we're not actually in a vehicle/housing
             -- the flags should be false
             local inVehicle = (UnitInVehicle and UnitInVehicle("player"))
                               or (HasVehicleActionBar and HasVehicleActionBar())
@@ -3777,7 +4169,7 @@ function EAB:FinishSetup()
     -- Slot changed: update visibility when a spell is placed/removed from a slot
     -- This fires per-slot and ensures buttons update without /reload
     self:RegisterEvent("ACTIONBAR_SLOT_CHANGED", function()
-        -- During drag, skip â€” OnGridChange already shows everything,
+        -- During drag, skip ├óΓé¼ΓÇ¥ OnGridChange already shows everything,
         -- and HIDEGRID / CURSOR_CHANGED will restore afterwards
         if gridShown then return end
         C_Timer_After(0, function()
@@ -3787,6 +4179,36 @@ function EAB:FinishSetup()
             end
         end)
     end)
+
+
+
+    -- Talent changes can cause Blizzard to re-show hidden bars.
+    -- Re-run the hider and re-unregister events on the affected frames.
+    self:RegisterEvent("PLAYER_TALENT_UPDATE", function()
+        if InCombatLockdown() then return end
+        for _, name in ipairs(BLIZZARD_BARS_TO_HIDE) do
+            local bar = _G[name]
+            if bar then
+                bar:UnregisterAllEvents()
+                bar:SetParent(hiddenParent)
+                bar:Hide()
+            end
+        end
+        if MainActionBarController then
+            MainActionBarController:UnregisterAllEvents()
+        end
+    end)
+
+    -- Hook Show on the Blizzard bars so they can never re-appear regardless
+    -- of what fires them (talent changes, spec swaps, zone transitions, etc.)
+    for _, name in ipairs(BLIZZARD_BARS_TO_HIDE) do
+        local bar = _G[name]
+        if bar then
+            bar:HookScript("OnShow", function(self)
+                self:Hide()
+            end)
+        end
+    end
 
     -- Register minimap button
     RegisterMinimapButton()

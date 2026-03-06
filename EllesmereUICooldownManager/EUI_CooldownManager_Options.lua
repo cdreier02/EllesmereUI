@@ -2668,6 +2668,14 @@ initFrame:SetScript("OnEvent", function(self)
             stackTxt:Hide()
             slot._stackText = stackTxt
 
+            -- Keybind text (mirrors _keybindText on real CDM icons)
+            local kbTxt = slot:CreateFontString(nil, "OVERLAY")
+            kbTxt:SetFont(FONT_PATH, 9, "OUTLINE")
+            kbTxt:SetPoint("TOPLEFT", 2, -2)
+            kbTxt:SetJustifyH("LEFT")
+            kbTxt:Hide()
+            slot._keybindText = kbTxt
+
             slot:SetScript("OnEnter", function()
                 if dragSlot then return end
                 -- Custom shapes: tint the shape border instead of square edges
@@ -3272,6 +3280,31 @@ initFrame:SetScript("OnEvent", function(self)
                         end
                     else
                         slot._stackText:Hide()
+                    end
+                end
+
+                -- Keybind text preview
+                if slot._keybindText then
+                    slot._keybindText:SetFont(FONT_PATH, bd.keybindSize or 10, "OUTLINE")
+                    slot._keybindText:ClearAllPoints()
+                    slot._keybindText:SetPoint("TOPLEFT", slot, "TOPLEFT", bd.keybindOffsetX or 2, bd.keybindOffsetY or -2)
+                    slot._keybindText:SetTextColor(bd.keybindR or 1, bd.keybindG or 1, bd.keybindB or 1, bd.keybindA or 0.9)
+                    local sid = slot._previewSpellID
+                    if bd.showKeybind and sid then
+                        local cache = ns.CDMKeybindCache or ns._cdmKeybindCache
+                        local key = cache and cache[sid]
+                        if not key and C_Spell.GetSpellName then
+                            local n = C_Spell.GetSpellName(sid)
+                            if n and cache then key = cache[n] end
+                        end
+                        if key then
+                            slot._keybindText:SetText(key)
+                            slot._keybindText:Show()
+                        else
+                            slot._keybindText:Hide()
+                        end
+                    else
+                        slot._keybindText:Hide()
                     end
                 end
 
@@ -3950,6 +3983,73 @@ initFrame:SetScript("OnEvent", function(self)
                   setValue=function(v) BD().hideBuffsWhenInactive = v; Refresh() end },
                 { type="label", text="" }
             );  y = y - h
+        end
+
+        -- Tooltip / Keybind
+        local kbRow
+        kbRow, h = W:DualRow(parent, y,
+            { type="toggle", text="Show Tooltip on Hover",
+              getValue=function() return BD().showTooltip == true end,
+              setValue=function(v)
+                  BD().showTooltip = v
+                  Refresh()
+              end },
+            { type="toggle", text="Show Keybind",
+              getValue=function() return BD().showKeybind == true end,
+              setValue=function(v)
+                  BD().showKeybind = v
+                  ns.RefreshCDMIconAppearance(BD().key); ns.ApplyCachedKeybinds(); UpdateCDMPreview(); EllesmereUI:RefreshPage()
+              end }
+        );  y = y - h
+
+        -- Inline color swatch + cog on Show Keybind (right region)
+        do
+            local rgn = kbRow._rightRegion
+            local ctrl = rgn and rgn._control
+
+            -- Color swatch
+            local kbSwatch, updateKbSwatch
+            if ctrl and EllesmereUI.BuildColorSwatch then
+                kbSwatch, updateKbSwatch = EllesmereUI.BuildColorSwatch(
+                    rgn, kbRow:GetFrameLevel() + 3,
+                    function() return BD().keybindR or 1, BD().keybindG or 1, BD().keybindB or 1 end,
+                    function(r, g, b)
+                        BD().keybindR = r; BD().keybindG = g; BD().keybindB = b
+                        ns.RefreshCDMIconAppearance(BD().key); ns.ApplyCachedKeybinds(); UpdateCDMPreview(); EllesmereUI:RefreshPage()
+                    end,
+                    false, 20)
+                PP.Point(kbSwatch, "RIGHT", ctrl, "LEFT", -8, 0)
+            end
+
+            -- Cog: size + x/y offsets
+            local _, kbCogShow = EllesmereUI.BuildCogPopup({
+                title = "Keybind Text Settings",
+                rows = {
+                    { type = "slider", label = "Text Size", min = 6, max = 20, step = 1,
+                      get = function() return BD().keybindSize or 10 end,
+                      set = function(v) BD().keybindSize = v; ns.RefreshCDMIconAppearance(BD().key); ns.ApplyCachedKeybinds(); UpdateCDMPreview(); EllesmereUI:RefreshPage() end },
+                    { type = "slider", label = "X Offset", min = -30, max = 30, step = 1,
+                      get = function() return BD().keybindOffsetX or 2 end,
+                      set = function(v) BD().keybindOffsetX = v; ns.RefreshCDMIconAppearance(BD().key); ns.ApplyCachedKeybinds(); UpdateCDMPreview(); EllesmereUI:RefreshPage() end },
+                    { type = "slider", label = "Y Offset", min = -30, max = 30, step = 1,
+                      get = function() return BD().keybindOffsetY or -2 end,
+                      set = function(v) BD().keybindOffsetY = v; ns.RefreshCDMIconAppearance(BD().key); ns.ApplyCachedKeybinds(); UpdateCDMPreview(); EllesmereUI:RefreshPage() end },
+                },
+            })
+            MakeCogBtn(rgn, kbCogShow, kbSwatch, EllesmereUI.RESIZE_ICON)
+
+            -- Blocking overlay when Show Keybind is off
+            if kbSwatch then
+                local swatchBlock = CreateFrame("Frame", nil, kbSwatch)
+                swatchBlock:SetAllPoints()
+                swatchBlock:SetFrameLevel(kbSwatch:GetFrameLevel() + 10)
+                swatchBlock:EnableMouse(true)
+                EllesmereUI.RegisterWidgetRefresh(function()
+                    local on = BD().showKeybind == true
+                    kbSwatch:SetAlpha(on and 1 or 0.3)
+                    if on then swatchBlock:Hide() else swatchBlock:Show() end
+                end)
+            end
         end
 
         _, h = W:Spacer(parent, y, 8);  y = y - h
