@@ -1836,9 +1836,8 @@ initFrame:SetScript("OnEvent", function(self)
         -------------------------------------------------------------------
         _, h = W:SectionHeader(parent, "ACTION BARS", y);  y = y - h
 
-        -- Access EAB through AceAddon registry
-        local EAB = LibStub and LibStub("AceAddon-3.0", true)
-            and LibStub("AceAddon-3.0"):GetAddon("EllesmereUIActionBars", true)
+        -- Access EAB through addon registry
+        local EAB = EllesmereUI.Lite and EllesmereUI.Lite.GetAddon("EllesmereUIActionBars", true)
         local function EAB_db()
             if EAB and EAB.db then return EAB.db.profile end
             return nil

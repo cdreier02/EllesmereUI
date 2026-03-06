@@ -6,7 +6,7 @@
 --  Does NOT parse secret values ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â works around restricted APIs.
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-local ECME = LibStub("AceAddon-3.0"):NewAddon("EllesmereUICooldownManager", "AceEvent-3.0")
+local ECME = EllesmereUI.Lite.NewAddon("EllesmereUICooldownManager")
 ns.ECME = ECME
 
 local PP = EllesmereUI.PP
@@ -778,6 +778,27 @@ local function GetCurrentSpecKey()
     if not specIndex then return "0" end
     local specID = select(1, GetSpecializationInfo(specIndex))
     return tostring(specID or 0)
+end
+
+-- Validates that activeSpecKey matches the real spec. If not, triggers a full
+-- spec switch. Called from multiple events as a safety net so the CDM can
+-- NEVER show the wrong spec's icons.
+local _specValidated = false
+local function ValidateSpec()
+    if not ECME.db then return end
+    local realKey = GetCurrentSpecKey()
+    if realKey == "0" then return end  -- spec API not ready yet
+    local p = ECME.db.profile
+    if p.activeSpecKey == realKey then
+        _specValidated = true
+        return
+    end
+    -- Mismatch detected — force a full spec switch
+    _specValidated = true
+    -- SwitchSpecProfile is defined later; called via ns reference
+    if ns.SwitchSpecProfile then
+        ns.SwitchSpecProfile(realKey)
+    end
 end
 
 local function EnsureSpec(profile, key)
@@ -3689,6 +3710,11 @@ ns.ApplyCachedKeybinds = ApplyCachedKeybinds
 ns.CDMKeybindCache = _cdmKeybindCache
 
 BuildAllCDMBars = function()
+    -- Last-resort spec guard: if we're about to build bars with wrong spec, fix it
+    if not _specValidated then
+        ValidateSpec()
+    end
+
     local p = ECME.db.profile
     if not p.cdmBars.enabled then
         -- Restore Blizzard CDM if we're disabled
@@ -4529,7 +4555,7 @@ function ECME:OnInitialize()
         return
     end
 
-    self.db = LibStub("AceDB-3.0"):New("EllesmereUICooldownManagerDB", DEFAULTS, true)
+    self.db = EllesmereUI.Lite.NewDB("EllesmereUICooldownManagerDB", DEFAULTS, true)
 
     -- Migration: enable showStackCount on the buffs bar (was false by default)
     do
@@ -4593,15 +4619,21 @@ function ECME:OnEnable()
     local p = ECME.db.profile
     local oldSpecKey = p.activeSpecKey
     local newSpecKey = GetCurrentSpecKey()
-    if oldSpecKey and oldSpecKey ~= "0" and oldSpecKey ~= newSpecKey then
+    if newSpecKey ~= "0" and oldSpecKey and oldSpecKey ~= "0" and oldSpecKey ~= newSpecKey then
         -- Spec changed (different character or respec while offline)
         -- Save old spec data BEFORE updating activeSpecKey
         SaveCurrentSpecProfile()
         -- Now update to the new spec and load its profile
         SetActiveSpec()
         LoadSpecProfile(newSpecKey)
-    else
+        _specValidated = true
+    elseif newSpecKey ~= "0" then
         SetActiveSpec()
+        _specValidated = true
+    else
+        -- GetSpecialization() not ready yet — leave activeSpecKey as-is,
+        -- ValidateSpec will fix it when SPELLS_CHANGED or PEW fires
+        _specValidated = false
     end
     EnsureMappings(GetStore())
 
@@ -4675,6 +4707,7 @@ end
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 eventFrame:RegisterEvent("PLAYER_SPECIALIZATION_CHANGED")
+eventFrame:RegisterEvent("SPELLS_CHANGED")
 eventFrame:RegisterUnitEvent("UNIT_AURA", "player")
 eventFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eventFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -4734,24 +4767,35 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo)
     end
     if event == "PLAYER_ENTERING_WORLD" then
         _inCombat = InCombatLockdown and InCombatLockdown() or false
-        -- Rebuild CDM bars on zone-in (catches auto spec swaps from dungeon queue, etc.)
-        C_Timer.After(1, function()
+        -- Validate spec on every zone-in (catches auto spec swaps, login, etc.)
+        C_Timer.After(0.5, function()
+            ValidateSpec()
+            -- If spec was already correct, just rebuild bars
+            if not _specValidated then return end
             local newSpecKey = GetCurrentSpecKey()
             local p = ECME.db and ECME.db.profile
-            if p and newSpecKey ~= p.activeSpecKey then
-                SwitchSpecProfile(newSpecKey)
-            else
+            if p and newSpecKey == p.activeSpecKey then
                 BuildAllCDMBars()
             end
         end)
     end
+    if event == "SPELLS_CHANGED" then
+        -- SPELLS_CHANGED fires reliably after spec data is available.
+        -- Use it as a safety net to catch spec mismatches that OnEnable missed.
+        if not _specValidated then
+            ValidateSpec()
+        end
+        return
+    end
     if event == "PLAYER_SPECIALIZATION_CHANGED" and unit == "player" then
         local newSpecKey = GetCurrentSpecKey()
         local p = ECME.db.profile
-        if newSpecKey ~= p.activeSpecKey then
+        if newSpecKey ~= "0" and newSpecKey ~= p.activeSpecKey then
             SwitchSpecProfile(newSpecKey)
-        else
+            _specValidated = true
+        elseif newSpecKey ~= "0" then
             SetActiveSpec()
+            _specValidated = true
             C_Timer.After(0.5, function() BuildAllCDMBars() end)
         end
     end

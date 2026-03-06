@@ -3,7 +3,7 @@
 --  Design-first scaffold: background, sidebar, header, content area, controls
 --  Meant to be shared across the entire EllesmereUI addon suite.
 -------------------------------------------------------------------------------
-if EllesmereUI then return end   -- already loaded by another addon in the suite
+if EllesmereUI and EllesmereUI._loaded then return end   -- already loaded by another addon in the suite
 
 local EUI_HOST_ADDON = ...
 
@@ -270,8 +270,9 @@ end
 -------------------------------------------------------------------------------
 --  Forward declarations
 -------------------------------------------------------------------------------
-local EllesmereUI = {}
+local EllesmereUI = _G.EllesmereUI or {}
 _G.EllesmereUI = EllesmereUI
+EllesmereUI._loaded = true
 EllesmereUI.GLOBAL_KEY = "_EUIGlobal"
 EllesmereUI.ADDON_ROSTER = ADDON_ROSTER
 EllesmereUI.LOCALE_FONT_FALLBACK = LOCALE_FONT_FALLBACK
@@ -1210,7 +1211,7 @@ function EllesmereUI.ApplyColorsToOUF()
     end
     -- 5. Refresh action bar borders (class-colored borders read RAID_CLASS_COLORS)
     local ok, EAB = pcall(function()
-        return LibStub and LibStub("AceAddon-3.0"):GetAddon("EllesmereUIActionBars", true)
+        return EllesmereUI.Lite and EllesmereUI.Lite.GetAddon("EllesmereUIActionBars", true)
     end)
     if ok and EAB and EAB.ApplyBorders and not InCombatLockdown() then
         EAB:ApplyBorders()
@@ -5215,7 +5216,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "2.9.5"
+EllesmereUI.VERSION = "2.9.6"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end

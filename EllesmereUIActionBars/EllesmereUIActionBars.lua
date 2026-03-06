@@ -12,7 +12,7 @@
 --  Paging via RegisterStateDriver on secure header frames.
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-local EAB = LibStub("AceAddon-3.0"):NewAddon(ADDON_NAME, "AceEvent-3.0")
+local EAB = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.EAB = EAB
 
 local PP = EllesmereUI.PP
@@ -3695,7 +3695,7 @@ function EAB:OnInitialize()
     local isFirstInstall = not rawDB or not rawDB.profiles
         or (rawDB.profiles and not rawDB.profiles.Default)
 
-    self.db = LibStub("AceDB-3.0"):New("EllesmereUIActionBarsDB", defaults, true)
+    self.db = EllesmereUI.Lite.NewDB("EllesmereUIActionBarsDB", defaults, true)
 
     -- Mark whether we need to capture Blizzard layout on first login.
     -- The actual capture is deferred to PLAYER_ENTERING_WORLD when

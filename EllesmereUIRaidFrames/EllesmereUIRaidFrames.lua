@@ -4,7 +4,7 @@
 --  Handles frame creation, event dispatch, health/power/aura updates
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-local ERF = LibStub("AceAddon-3.0"):NewAddon(ADDON_NAME, "AceEvent-3.0")
+local ERF = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.ERF = ERF
 
 -- Expose globally for options and cross-file access
@@ -259,7 +259,7 @@ function ERF:OnInitialize()
         return
     end
 
-    self.db = LibStub("AceDB-3.0"):New("EllesmereUIRaidFramesDB", defaults, true)
+    self.db = EllesmereUI.Lite.NewDB("EllesmereUIRaidFramesDB", defaults, true)
 
     -- Create the anchor frame for positioning (movable via unlock mode)
     local anchor = CreateFrame("Frame", "EllesmereUIRaidFramesAnchor", UIParent)

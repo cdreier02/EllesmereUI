@@ -6,7 +6,7 @@
 --  smooth animations, combat fade, low-resource alerts, class-colored bars
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-local ERB = LibStub("AceAddon-3.0"):NewAddon(ADDON_NAME, "AceEvent-3.0")
+local ERB = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.ERB = ERB
 
 local PP = EllesmereUI.PP
@@ -2816,7 +2816,7 @@ function ERB:OnInitialize()
         return
     end
 
-    self.db = LibStub("AceDB-3.0"):New("EllesmereUIResourceBarsDB", DEFAULTS, true)
+    self.db = EllesmereUI.Lite.NewDB("EllesmereUIResourceBarsDB", DEFAULTS, true)
 
     _G._ERB_AceDB = self.db
     _G._ERB_Apply = function() ERB:ApplyAll() end

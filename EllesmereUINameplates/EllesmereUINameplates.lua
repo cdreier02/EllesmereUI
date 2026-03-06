@@ -4489,7 +4489,7 @@ do
     ns._ApplySpecPresetFromDB = ApplySpecPresetFromDB
 end
 
-local npAddon = LibStub("AceAddon-3.0"):NewAddon("EllesmereUINameplatesInit", "AceEvent-3.0")
+local npAddon = EllesmereUI.Lite.NewAddon("EllesmereUINameplatesInit")
 function npAddon:OnInitialize()
     InitDB()
 end

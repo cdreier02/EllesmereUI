@@ -1,6 +1,6 @@
 local ADDON_NAME = ...
 
-local ECL = LibStub("AceAddon-3.0"):NewAddon("EllesmereUICursor", "AceEvent-3.0")
+local ECL = EllesmereUI.Lite.NewAddon("EllesmereUICursor")
 
 local TEX_CUSTOM = "Interface\\AddOns\\EllesmereUICursor\\Media\\ellesmere_cursor.tga"
 
@@ -888,7 +888,7 @@ function ECL:OnInitialize()
         return
     end
 
-    self.db = LibStub("AceDB-3.0"):New("EllesmereUICursorDB", {
+    self.db = EllesmereUI.Lite.NewDB("EllesmereUICursorDB", {
         profile = {
             enabled = true,
             instanceOnly = DEF_INSTANCE_ONLY,

@@ -155,7 +155,7 @@ initFrame:SetScript("OnEvent", function(self)
         local barKeys = { "MainBar", "Bar2", "Bar3", "Bar4", "Bar5", "Bar6", "Bar7", "Bar8" }
         local barKey = barKeys[barIdx]
         if not barKey then return false end
-        local ok, EAB = pcall(LibStub("AceAddon-3.0").GetAddon, LibStub("AceAddon-3.0"), "EllesmereUIActionBars")
+        local ok, EAB = pcall(EllesmereUI.Lite.GetAddon, "EllesmereUIActionBars")
         if ok and EAB and EAB.db and EAB.db.profile and EAB.db.profile.bars then
             local s = EAB.db.profile.bars[barKey]
             if s and s.buttonShape and s.buttonShape ~= "none" and s.buttonShape ~= "cropped" then
@@ -407,7 +407,7 @@ initFrame:SetScript("OnEvent", function(self)
             _bgPreviewGlowActive[idx] = false
         end
 
-        local ok, EAB_ADDON = pcall(LibStub("AceAddon-3.0").GetAddon, LibStub("AceAddon-3.0"), "EllesmereUIActionBars")
+        local ok, EAB_ADDON = pcall(EllesmereUI.Lite.GetAddon, "EllesmereUIActionBars")
         if not ok then EAB_ADDON = nil end
         local barKeys = { "MainBar", "Bar2", "Bar3", "Bar4", "Bar5", "Bar6", "Bar7", "Bar8" }
         local barKey = barKeys[curBar] or "MainBar"

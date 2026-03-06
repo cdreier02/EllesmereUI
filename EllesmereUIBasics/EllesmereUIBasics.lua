@@ -4,7 +4,7 @@
 --  Themes: Classic (untouched Blizzard) / Modern (clean border, square/circle)
 -------------------------------------------------------------------------------
 local ADDON_NAME, ns = ...
-local EMC = LibStub("AceAddon-3.0"):NewAddon(ADDON_NAME, "AceEvent-3.0")
+local EMC = EllesmereUI.Lite.NewAddon(ADDON_NAME)
 ns.EMC = EMC
 
 local floor, abs, format = math.floor, math.abs, string.format
@@ -421,7 +421,7 @@ function EMC:OnInitialize()
         return
     end
 
-    self.db = LibStub("AceDB-3.0"):New("EllesmereUIBasicsDB", DEFAULTS, true)
+    self.db = EllesmereUI.Lite.NewDB("EllesmereUIBasicsDB", DEFAULTS, true)
 
     -- Merge module defaults into profile if missing
     local p = self.db.profile

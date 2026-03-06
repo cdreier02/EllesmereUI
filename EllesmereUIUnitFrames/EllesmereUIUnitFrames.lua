@@ -5799,7 +5799,7 @@ StaticPopupDialogs["ELLESMERE_RESET_DEFAULTS"] = {
 -- 3D portrait warning popup is now handled by EllesmereUI:ShowConfirmPopup
 -- in EUI_UnitFrames_Options.lua (portrait mode dropdown handler).
 
-local EllesmereUF = LibStub("AceAddon-3.0"):NewAddon("EllesmereUIUnitFrames")
+local EllesmereUF = EllesmereUI.Lite.NewAddon("EllesmereUIUnitFrames")
 
 -- Migrate old shared playerTarget table into separate player/target sub-tables
 local function MigratePlayerTarget()
@@ -5852,12 +5852,7 @@ function EllesmereUF:OnInitialize()
         return
     end
 
-    local AceDB = LibStub("AceDB-3.0", true)
-    if AceDB then
-        db = AceDB:New("EllesmereUIUnitFramesDB", defaults, true)
-    else
-        db = { profile = defaults.profile }
-    end
+    db = EllesmereUI.Lite.NewDB("EllesmereUIUnitFramesDB", defaults, true)
     MigratePlayerTarget()
     -- Migrate old use3DPortrait boolean to new portraitMode string (one-time)
     do

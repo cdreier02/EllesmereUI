@@ -6,7 +6,7 @@
 -------------------------------------------------------------------------------
 local ADDON_NAME = ...
 
-local AceDB = LibStub("AceDB-3.0")
+-- AceDB replaced by EllesmereUI.Lite.NewDB
 
 local Known = function(id) return id and (IsPlayerSpell(id) or IsSpellKnown(id)) end
 local InCombat = function() return InCombatLockdown and InCombatLockdown() end
@@ -2062,7 +2062,7 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2)
     if EllesmereUIDB and EllesmereUIDB.disabledAddons and EllesmereUIDB.disabledAddons[ADDON_NAME] then return end
 
     if e == "PLAYER_LOGIN" then
-        db = AceDB:New("EllesmereUIAuraBuffRemindersDB", defaults, true)
+        db = EllesmereUI.Lite.NewDB("EllesmereUIAuraBuffRemindersDB", defaults, true)
 
         -- Migration: Source of Magic moved from raidBuffs to auras
         if db.profile.raidBuffs and db.profile.raidBuffs.enabled and db.profile.raidBuffs.enabled.som ~= nil then
