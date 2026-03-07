@@ -1779,7 +1779,7 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         _, h = W:SectionHeader(parent, SECTION_FRIENDLY, y);  y = y - h
 
-        local function friendlyPlayersOff() return DBVal("showFriendlyPlayers") == false end
+        local function friendlyPlayersOff() return DBVal("showFriendlyPlayers") == false and DBVal("friendlyShowDefaultNames") ~= true end
         local function friendlyPlateOff() return friendlyPlayersOff() or DBVal("friendlyNameOnly") ~= false end
         local function nameOnlyOff() return friendlyPlayersOff() or DBVal("friendlyNameOnly") == false end
 
@@ -1789,6 +1789,7 @@ initFrame:SetScript("OnEvent", function(self)
               getValue=function() return DBVal("showFriendlyPlayers") ~= false end,
               setValue=function(v)
                 DB().showFriendlyPlayers = v
+                if v then DB().friendlyShowDefaultNames = false end
                 if SetCVar then
                     pcall(SetCVar, "nameplateShowFriendlyPlayers", v and 1 or 0)
                     pcall(SetCVar, "nameplateShowFriendlyPlayerUnits", v and 1 or 0)
@@ -1833,7 +1834,7 @@ initFrame:SetScript("OnEvent", function(self)
                     local MIN_POPUP_W = 180
 
                     local totalH = TOP_PAD + TITLE_H + TITLE_GAP + GAP
-                                 + ROW_H + GAP + ROW_H + GAP + ROW_H + GAP + TOGGLE_ROW_H
+                                 + ROW_H + GAP + ROW_H + GAP + ROW_H + GAP + TOGGLE_ROW_H + GAP + TOGGLE_ROW_H
                                  + TOP_PAD
 
                     local pf = CreateFrame("Frame", nil, UIParent)
@@ -1938,6 +1939,63 @@ initFrame:SetScript("OnEvent", function(self)
                         UpdateToggle4()
                     end)
                     pf._updateToggle = UpdateToggle4
+
+                    -- Row 5: Show Default Names
+                    local r5Y = r4Y - TOGGLE_ROW_H - GAP
+                    local lbl5 = MakeFont(pf, 11, nil, 1, 1, 1); lbl5:SetAlpha(0.6)
+                    lbl5:SetText("Show Default Names"); lbl5:SetPoint("TOPLEFT", pf, "TOPLEFT", SIDE_PAD, r5Y)
+
+                    local tgBtn5 = CreateFrame("Button", nil, pf)
+                    tgBtn5:SetSize(TG_W, TG_H)
+                    tgBtn5:SetPoint("TOPRIGHT", pf, "TOPRIGHT", -SIDE_PAD, r5Y)
+
+                    local tgBg5 = SolidTex(tgBtn5, "BACKGROUND", 0.18, 0.18, 0.18, 0.85)
+                    tgBg5:SetAllPoints()
+                    local tgKnob5 = tgBtn5:CreateTexture(nil, "ARTWORK")
+                    tgKnob5:SetColorTexture(0.55, 0.55, 0.55, 1)
+                    tgKnob5:SetSize(KNOB_SZ, KNOB_SZ)
+
+                    local function UpdateToggle5()
+                        local on = (EllesmereUINameplatesDB and EllesmereUINameplatesDB.friendlyShowDefaultNames == true)
+                        if on then
+                            local g = EllesmereUI.ELLESMERE_GREEN
+                            tgBg5:SetColorTexture(g.r, g.g, g.b, 0.45)
+                            tgKnob5:SetColorTexture(1, 1, 1, 0.95)
+                            tgKnob5:ClearAllPoints(); tgKnob5:SetPoint("RIGHT", tgBtn5, "RIGHT", -KNOB_PAD, 0)
+                        else
+                            tgBg5:SetColorTexture(0.18, 0.18, 0.18, 0.85)
+                            tgKnob5:SetColorTexture(0.55, 0.55, 0.55, 1)
+                            tgKnob5:ClearAllPoints(); tgKnob5:SetPoint("LEFT", tgBtn5, "LEFT", KNOB_PAD, 0)
+                        end
+                    end
+                    UpdateToggle5()
+                    tgBtn5:SetScript("OnClick", function()
+                        local cur = EllesmereUINameplatesDB and EllesmereUINameplatesDB.friendlyShowDefaultNames or false
+                        local newVal = not cur
+                        DB().friendlyShowDefaultNames = newVal
+                        if newVal then
+                            -- Turn off friendly nameplates, keep names on
+                            DB().showFriendlyPlayers = false
+                            if SetCVar then
+                                pcall(SetCVar, "nameplateShowFriendlyPlayers", 0)
+                                pcall(SetCVar, "nameplateShowFriendlyPlayerUnits", 0)
+                                pcall(SetCVar, "nameplateShowFriends", 0)
+                                pcall(SetCVar, "UnitNameFriendlyPlayerName", 1)
+                            end
+                        else
+                            if SetCVar then
+                                pcall(SetCVar, "UnitNameFriendlyPlayerName", 0)
+                            end
+                        end
+                        if ns.UpdateFriendlyNameplateSystem then ns.UpdateFriendlyNameplateSystem() end
+                        if EllesmereUI and EllesmereUI.RefreshPage then EllesmereUI:RefreshPage() end
+                        UpdateToggle5()
+                    end)
+
+                    pf._updateToggle = function()
+                        UpdateToggle4()
+                        UpdateToggle5()
+                    end
 
                     -- Close on click outside
                     local wasDown = false

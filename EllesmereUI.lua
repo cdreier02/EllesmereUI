@@ -2945,8 +2945,7 @@ local function CreateMainFrame()
         C_Timer.After(0, function() SetOpacity(DEFAULT_A) end)
     end
 
-    -- Shared resource-gathering helper (used by both sidebar tracker and debug overlay)
-    -- Returns totalMem (KB) and a table of CPU totals keyed by metric enum
+    -- CPU metric keys for the sidebar performance tracker
     local CPU_METRICS = {}
     if Enum and Enum.AddOnProfilerMetric then
         CPU_METRICS = {
@@ -2958,15 +2957,11 @@ local function CreateMainFrame()
         }
     end
 
-    local function GatherEUIResources()
-        UpdateAddOnMemoryUsage()
-        local totalMem = 0
+    local function GatherEUICPU()
         local cpuByKey = {}
         for _, m in ipairs(CPU_METRICS) do cpuByKey[m.key] = 0 end
-
         for _, info in ipairs(ADDON_ROSTER) do
             if IsAddonLoaded(info.folder) then
-                totalMem = totalMem + (GetAddOnMemoryUsage(info.folder) or 0)
                 if C_AddOnProfiler and C_AddOnProfiler.GetAddOnMetric then
                     for _, m in ipairs(CPU_METRICS) do
                         cpuByKey[m.key] = cpuByKey[m.key] + (C_AddOnProfiler.GetAddOnMetric(info.folder, m.enum) or 0)
@@ -2974,62 +2969,58 @@ local function CreateMainFrame()
                 end
             end
         end
-        return totalMem, cpuByKey
+        return cpuByKey
     end
 
-    -- Resource usage tracker (memory + CPU for all EUI addons)
+    -- Resource usage tracker (CPU for all EUI addons)
     -- Only ticks when the options panel is visible (parented to sidebar,
     -- which is a descendant of mainFrame -- hidden frames don't fire OnUpdate)
 
-    local resMemText = MakeFont(sidebar, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
-    resMemText:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", -20, 18)
-    resMemText:SetJustifyH("RIGHT")
-    resMemText:SetAlpha(0.5)
-
     local resCpuText = MakeFont(sidebar, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
-    resCpuText:SetPoint("BOTTOMRIGHT", resMemText, "TOPRIGHT", 0, 3)
+    resCpuText:SetPoint("BOTTOMRIGHT", sidebar, "BOTTOMRIGHT", -20, 18)
     resCpuText:SetJustifyH("RIGHT")
     resCpuText:SetAlpha(0.5)
 
+    local resCpuLabel = MakeFont(sidebar, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
+    resCpuLabel:SetPoint("BOTTOMRIGHT", resCpuText, "TOPRIGHT", 0, 3)
+    resCpuLabel:SetJustifyH("RIGHT")
+    resCpuLabel:SetAlpha(0.5)
+    resCpuLabel:SetText("CPU Usage:")
+
     local resPerfLabel = MakeFont(sidebar, 10, nil, TEXT_DIM.r, TEXT_DIM.g, TEXT_DIM.b, TEXT_DIM.a)
-    resPerfLabel:SetPoint("BOTTOMRIGHT", resCpuText, "TOPRIGHT", 0, 3)
+    resPerfLabel:SetPoint("BOTTOMRIGHT", resCpuLabel, "TOPRIGHT", 0, 11)
     resPerfLabel:SetJustifyH("RIGHT")
     resPerfLabel:SetAlpha(0.5)
-    resPerfLabel:SetText("All EUI Addons:")
+    resPerfLabel:SetText("All EUI Addons")
 
-    -- Forward declarations
+    local resDivider = sidebar:CreateTexture(nil, "ARTWORK")
+    resDivider:SetColorTexture(1, 1, 1, 0.15)
+    resDivider:SetHeight(1)
+    resDivider:SetPoint("BOTTOMRIGHT", resPerfLabel, "BOTTOMRIGHT", 0, -5)
+    resDivider:SetPoint("BOTTOMLEFT", resPerfLabel, "BOTTOMLEFT", 0, -5)
+
     local RES_UPDATE_INTERVAL = 5
-    local UpdateResourceText              -- assigned after definition below
+    local UpdateResourceText
 
     UpdateResourceText = function()
-        local totalMem, cpuByKey = GatherEUIResources()
-
-        if totalMem >= 1024 then
-            resMemText:SetText("Memory Usage: |cffffffff" .. string.format("%.1f MB", totalMem / 1024) .. "|r")
-        else
-            resMemText:SetText("Memory Usage: |cffffffff" .. string.format("%.0f KB", totalMem) .. "|r")
-        end
-
+        local cpuByKey = GatherEUICPU()
         local cpuVal = cpuByKey["RecentAvg"] or 0
         if C_AddOnProfiler and C_AddOnProfiler.GetAddOnMetric then
-            -- % of frame budget: cpuVal is ms/frame, frame budget is 1000/fps ms
             local fps = GetFramerate() or 0
             local pct = 0
             if fps > 0 then
                 pct = cpuVal / (1000 / fps) * 100
             end
-            resCpuText:SetText("CPU Usage: |cffffffff" .. string.format("%.3f MS (%.1f%%)", cpuVal, pct) .. "|r")
+            resCpuText:SetText("|cffffffff" .. string.format("%.3f MS (%.1f%%)", cpuVal, pct) .. "|r")
         else
-            resCpuText:SetText("CPU Usage: |cffffffffN/A|r")
+            resCpuText:SetText("|cffffffffN/A|r")
         end
     end
 
     local resUpdateFrame = CreateFrame("Frame", nil, sidebar)
-    -- Use C_Timer instead of OnUpdate: fires exactly once per interval,
-    -- zero per-frame overhead (OnUpdate fired every frame just to compare a timer).
     local resTicker
     resUpdateFrame:SetScript("OnShow", function()
-        UpdateResourceText()  -- immediate update on show
+        UpdateResourceText()
         if not resTicker then
             resTicker = C_Timer.NewTicker(RES_UPDATE_INTERVAL, UpdateResourceText)
         end
@@ -5006,7 +4997,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "3.4"
+EllesmereUI.VERSION = "3.4.5"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end
@@ -5068,9 +5059,10 @@ end
 
 --------------------------------------------------------------------------------
 --  Global Incompatible Addon Detection
---  Runs once across the entire suite. Each entry maps a third-party addon to
---  the Ellesmere addon(s) it conflicts with. "all" means every addon except
---  EllesmereUIPartyMode.
+--  Runs once per session. Non-ElvUI conflicts always show. ElvUI is a
+--  one-off warning: once dismissed while it is the ONLY conflict, it is
+--  suppressed forever. If other conflicts are also present, ElvUI shows too
+--  and the one-off flag is not consumed.
 --------------------------------------------------------------------------------
 if not _G._EUI_ConflictChecked then
     _G._EUI_ConflictChecked = true
@@ -5099,15 +5091,16 @@ if not _G._EUI_ConflictChecked then
 
         local exempt = { EllesmereUIPartyMode = true }
 
-        -- Ensure the dismissed-conflicts table exists in SavedVariables
         if not EllesmereUIDB then EllesmereUIDB = {} end
         if not EllesmereUIDB.dismissedConflicts then EllesmereUIDB.dismissedConflicts = {} end
         local dismissed = EllesmereUIDB.dismissedConflicts
 
-        -- Collect all conflicts that are active and not yet dismissed
+        -- Collect all active conflicts.
+        -- ElvUI is filtered out if it has been permanently dismissed AND it
+        -- would be the only conflict showing (i.e. no other conflicts exist).
         local pending = {}
         for _, entry in ipairs(conflicts) do
-            if entry.addon ~= EUI_HOST_ADDON and IsLoaded(entry.addon) and not dismissed[entry.addon] then
+            if entry.addon ~= EUI_HOST_ADDON and IsLoaded(entry.addon) then
                 local affected = {}
                 if entry.targets == "all" then
                     local allTargets = {
@@ -5133,7 +5126,14 @@ if not _G._EUI_ConflictChecked then
             end
         end
 
-        -- Show one popup at a time; each dismissal marks the addon as seen forever
+        -- If ElvUI is the ONLY conflict and it has been dismissed, suppress it.
+        if #pending == 1 and pending[1].entry.addon == "ElvUI" and dismissed["ElvUI"] then
+            return
+        end
+
+        -- Show one popup at a time.
+        -- Non-ElvUI: never permanently dismissed (always shows next session).
+        -- ElvUI: permanently dismissed only when it was the sole conflict.
         local pendingIndex = 0
         local function ShowNextConflict()
             pendingIndex = pendingIndex + 1
@@ -5150,7 +5150,10 @@ if not _G._EUI_ConflictChecked then
                 .. "\n\nPlease disable one of them."
             )
             local function onDismiss()
-                dismissed[entry.addon] = true
+                -- Only permanently dismiss ElvUI, and only when it is the sole conflict
+                if entry.addon == "ElvUI" and #pending == 1 then
+                    dismissed["ElvUI"] = true
+                end
                 ShowNextConflict()
             end
             if EllesmereUI.ShowConfirmPopup then
@@ -5164,7 +5167,6 @@ if not _G._EUI_ConflictChecked then
                 })
             else
                 print("|cffff6060[EllesmereUI]|r " .. msg:gsub("\n", " "))
-                dismissed[entry.addon] = true
                 ShowNextConflict()
             end
         end

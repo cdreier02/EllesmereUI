@@ -1473,9 +1473,15 @@ local function MakeButtonSquare(btn)
     end
     -- Hook UpdateButtonArt to re-neutralize IconMask after Blizzard re-adds it
     -- (fires on combat transitions, bar page changes, bonus bar swaps, etc.)
+    -- Deferred via C_Timer to avoid tainting Blizzard's secure call chains.
     if not btn._eabArtHooked and btn.UpdateButtonArt then
         hooksecurefunc(btn, "UpdateButtonArt", function(self)
-            HideBorder(self)
+            if not self._eabArtFn then
+                self._eabArtFn = function()
+                    if self and not self:IsForbidden() then HideBorder(self) end
+                end
+            end
+            C_Timer_After(0, self._eabArtFn)
         end)
         btn._eabArtHooked = true
     end
@@ -1553,7 +1559,12 @@ local function MakeButtonSquare(btn)
         end)
         hooksecurefunc(btn.Border, "Show", function(self)
             if btn._eabShapeApplied then
-                self:Hide()
+                if not self._eabBorderHideFn then
+                    self._eabBorderHideFn = function()
+                        if self and not self:IsForbidden() then self:Hide() end
+                    end
+                end
+                C_Timer_After(0, self._eabBorderHideFn)
             end
         end)
         btn._eabBorderHooked = true

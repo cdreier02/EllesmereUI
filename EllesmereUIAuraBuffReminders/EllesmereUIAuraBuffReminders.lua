@@ -253,6 +253,10 @@ end
 local _preCombatOwnOnRaidCache = {}  -- [spellID] = true/false
 local SnapshotOwnOnRaidBuffs  -- forward declaration; defined after _unitHasBuffFromPlayer
 
+-- Pre-allocated scratch tables for hot per-Refresh functions (avoids GC churn)
+local _idLookupScratch  = {}
+local _lookupScratch    = {}
+
 local function PlayerHasAuraByID(spellIDs)
     if not spellIDs or not spellIDs[1] then return true end
     local inCombat = InCombat()
@@ -354,7 +358,8 @@ end
 -- lookup, no iteration).  Falls back to GetAuraDataByIndex iteration OOC.
 local function _unitHasBuffFromPlayer(u, spellIDs)
     local inCombat = InCombat()
-    local idLookup = {}
+    local idLookup = _idLookupScratch
+    wipe(idLookup)
     for j = 1, #spellIDs do idLookup[spellIDs[j]] = true end
 
     -- Fast path: direct lookup for whitelisted IDs
@@ -438,7 +443,8 @@ end
 local function PlayerHasSelfCastAuraByID(spellIDs)
     if not spellIDs or not spellIDs[1] then return true end
     if InCombat() then return false end  -- safety: can't read sourceUnit in combat
-    local lookup = {}
+    local lookup = _lookupScratch
+    wipe(lookup)
     for j = 1, #spellIDs do lookup[spellIDs[j]] = true end
     for i = 1, 40 do
         local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
@@ -1904,6 +1910,10 @@ end
 
 end
 
+-- Reusable tables wiped each Refresh() call to avoid per-call allocation.
+local _refreshMissing = {}
+local _refreshTalentMissing = {}
+
 local function Refresh()
     if not db then return end
     if euiPanelOpen then HideCombatIcons(); HideAllIcons(); return end
@@ -1929,7 +1939,8 @@ local function Refresh()
     local inCombat = InCombat()
 
     -- Collect missing reminders
-    local missing = {}
+    local missing = _refreshMissing
+    wipe(missing)
 
     ---------------------------------------------------------------------------
     --  1) Raid Buffs
@@ -1949,7 +1960,8 @@ local function Refresh()
     ---------------------------------------------------------------------------
     --  4) Talent Reminders
     ---------------------------------------------------------------------------
-    local talentMissing = {}
+    local talentMissing = _refreshTalentMissing
+    wipe(talentMissing)
     CollectTalentReminders(talentMissing, inInstance, inKeystone, inCombat)
 
 
@@ -2262,8 +2274,6 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2)
     if e == "UNIT_AURA" then
         if arg1 == "player" then
             RequestRefresh()
-        elseif type(arg1) == "string" and (arg1:match("^party") or arg1:match("^raid")) then
-            RequestRefresh()
         end
         return
     end
@@ -2332,7 +2342,7 @@ mainFrame:RegisterUnitEvent("UNIT_INVENTORY_CHANGED", "player")
 mainFrame:RegisterEvent("CHALLENGE_MODE_START")
 mainFrame:RegisterEvent("CHALLENGE_MODE_COMPLETED")
 mainFrame:RegisterEvent("CHALLENGE_MODE_RESET")
-mainFrame:RegisterEvent("BAG_UPDATE")
+mainFrame:RegisterEvent("BAG_UPDATE_DELAYED")
 mainFrame:RegisterEvent("WEAPON_ENCHANT_CHANGED")
 mainFrame:RegisterUnitEvent("UNIT_ENTERED_VEHICLE", "player")
 mainFrame:RegisterUnitEvent("UNIT_EXITED_VEHICLE", "player")

@@ -4445,6 +4445,7 @@ local function ReloadFrames()
                     -- Debuffs
                     if frame.Debuffs then
                         frame.Debuffs.num = settings.maxDebuffs or 20
+                        frame.Debuffs.onlyShowPlayer = settings.onlyPlayerDebuffs and true or nil
                         local dfp, dia, dgx, dgy, dox, doy = ResolveBuffLayout(
                             settings.debuffAnchor or "bottomleft",
                             settings.debuffGrowth or "auto"
@@ -4458,7 +4459,7 @@ local function ReloadFrames()
                                 liveDbCbOff = -cbH
                             end
                         end
-                        local debuffKey = (dia or "") .. (dfp or "") .. (dox or 0) .. (doy or 0) .. (dgx or 0) .. (dgy or 0) .. (settings.maxDebuffs or 20) .. liveDbCbOff
+                        local debuffKey = (dia or "") .. (dfp or "") .. (dox or 0) .. (doy or 0) .. (dgx or 0) .. (dgy or 0) .. (settings.maxDebuffs or 20) .. liveDbCbOff .. (settings.onlyPlayerDebuffs and "1" or "0")
                         if frame.Debuffs._lastDebuffKey ~= debuffKey then
                             frame.Debuffs._lastDebuffKey = debuffKey
                             frame.Debuffs:ClearAllPoints()

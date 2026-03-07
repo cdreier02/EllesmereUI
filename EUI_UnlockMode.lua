@@ -3781,18 +3781,11 @@ local function CreateHUD(parent)
             btn._isDisabled = false
 
             btn:SetScript("OnEnter", function(self)
-                if self._isDisabled then
-                    local tip = (text == "-") and "Minimum scale reached" or "Maximum scale reached"
-                    if EllesmereUI.ShowWidgetTooltip then
-                        EllesmereUI.ShowWidgetTooltip(self, tip)
-                    end
-                    return
-                end
+                if self._isDisabled then return end
                 self._shadow:SetTextColor(0, 0, 0, HOVER_A)
                 self._label:SetTextColor(HOVER_R, HOVER_G, HOVER_B, HOVER_A)
             end)
             btn:SetScript("OnLeave", function(self)
-                if EllesmereUI.HideWidgetTooltip then EllesmereUI.HideWidgetTooltip() end
                 if self._isDisabled then return end
                 self._shadow:SetTextColor(0, 0, 0, NORMAL_A)
                 self._label:SetTextColor(NORMAL_R, NORMAL_G, NORMAL_B, NORMAL_A)
@@ -3801,15 +3794,15 @@ local function CreateHUD(parent)
             return btn
         end
 
-        -- Minus button (10px right of the Exit button)
-        minusBtn = MakeScaleBtn("\226\128\147", "LEFT", exitBtn, "RIGHT", 10, 0)
+        -- Minus button (10px left of the Exit button, outer side)
+        minusBtn = MakeScaleBtn("\226\128\147", "RIGHT", exitBtn, "LEFT", -10, 0)
         minusBtn:SetScript("OnClick", function(self)
             if self._isDisabled then return end
             ApplyBannerScale(bannerUserScale - SCALE_STEP)
         end)
 
-        -- Plus button (10px left of the Save & Exit button)
-        plusBtn = MakeScaleBtn("+", "RIGHT", hudFrame._saveBtn, "LEFT", -10, 0)
+        -- Plus button (10px right of the Save & Exit button, outer side)
+        plusBtn = MakeScaleBtn("+", "LEFT", hudFrame._saveBtn, "RIGHT", 10, 0)
         plusBtn:SetScript("OnClick", function(self)
             if self._isDisabled then return end
             ApplyBannerScale(bannerUserScale + SCALE_STEP)
