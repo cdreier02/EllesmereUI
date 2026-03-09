@@ -18,8 +18,9 @@ local EllesmereUI = _G.EllesmereUI
 
 -------------------------------------------------------------------------------
 --  LibDeflate reference (loaded before us via TOC)
+--  LibDeflate registers via LibStub, not as a global, so use LibStub to get it.
 -------------------------------------------------------------------------------
-local LibDeflate = _G.LibDeflate
+local LibDeflate = LibStub and LibStub("LibDeflate", true) or _G.LibDeflate
 
 -------------------------------------------------------------------------------
 --  Addon registry: maps addon folder names to their DB accessor info.
@@ -928,10 +929,18 @@ do
         -- After a default reset reload, snapshot the fresh defaults as active profile
         if EllesmereUIDB and EllesmereUIDB._pendingDefaultSnapshot then
             EllesmereUIDB._pendingDefaultSnapshot = nil
+            local presetName = EllesmereUIDB._pendingPresetName or "EllesmereUI"
+            EllesmereUIDB._pendingPresetName = nil
             C_Timer.After(0.5, function()
                 local db = GetProfilesDB()
-                local name = db.activeProfile or "Custom"
-                db.profiles[name] = EllesmereUI.SnapshotAllAddons()
+                -- Ensure the preset name is in the order list
+                local found = false
+                for _, n in ipairs(db.profileOrder) do
+                    if n == presetName then found = true; break end
+                end
+                if not found then table.insert(db.profileOrder, 1, presetName) end
+                db.profiles[presetName] = EllesmereUI.SnapshotAllAddons()
+                db.activeProfile = presetName
             end)
         end
 
@@ -963,6 +972,22 @@ do
                 EllesmereUI._mainFrame:HookScript("OnHide", function()
                     EllesmereUI.AutoSaveActiveProfile()
                 end)
+            end
+
+            -- Debounced auto-save on every settings change (RefreshPage call).
+            -- Uses a 2-second timer so rapid slider drags collapse into one save.
+            if not EllesmereUI._profileRefreshHooked then
+                EllesmereUI._profileRefreshHooked = true
+                local _saveTimer = nil
+                local _origRefresh = EllesmereUI.RefreshPage
+                EllesmereUI.RefreshPage = function(self, ...)
+                    _origRefresh(self, ...)
+                    if _saveTimer then _saveTimer:Cancel() end
+                    _saveTimer = C_Timer.NewTimer(2, function()
+                        _saveTimer = nil
+                        EllesmereUI.AutoSaveActiveProfile()
+                    end)
+                end
             end
         end)
     end)

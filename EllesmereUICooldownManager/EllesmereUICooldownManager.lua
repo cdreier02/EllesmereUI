@@ -111,6 +111,7 @@ local _maxChargeCount    = {}  -- [spellID] = maxCharges, populated alongside _m
 local _zeroStartChargeSpells = {
     [399491] = true,  -- Teachings of the Monastery
     [115294] = true,  -- Mana Tea
+    [55090]  = true,  -- Scourge Strike
 }
 
 local function CacheMultiChargeSpell(spellID)

@@ -2883,6 +2883,17 @@ initFrame:SetScript("OnEvent", function(self)
 
         _, h = W:Spacer(parent, y, 10);  y = y - h
 
+        -- Returns a unique profile name for a preset base name.
+        -- If "EllesmereUI" doesn't exist yet → "EllesmereUI"
+        -- If it does → "EllesmereUI 2", "EllesmereUI 3", etc.
+        local function UniquePresetName(baseName)
+            local _, profiles = EllesmereUI.GetProfileList()
+            if not profiles[baseName] then return baseName end
+            local n = 2
+            while profiles[baseName .. " " .. n] do n = n + 1 end
+            return baseName .. " " .. n
+        end
+
         -------------------------------------------------------------------
         --  ACTIVE PROFILE section
         -------------------------------------------------------------------
@@ -3028,20 +3039,10 @@ initFrame:SetScript("OnEvent", function(self)
                 ddLabel:SetAlpha(EllesmereUI.DD_TXT_A)
             end)
 
-            -- Save button
-            local saveBtn = CreateFrame("Button", nil, rowFrame)
-            PP.Size(saveBtn, BTN_W, DD_H)
-            PP.Point(saveBtn, "LEFT", ddBtn, "RIGHT", BTN_GAP, 0)
-            saveBtn:SetFrameLevel(rowFrame:GetFrameLevel() + 2)
-            EllesmereUI.MakeStyledButton(saveBtn, "Save", 13,
-                EllesmereUI.WB_COLOURS, function()
-                    EllesmereUI.AutoSaveActiveProfile()
-                end)
-
             -- Save As button
             local saveAsBtn = CreateFrame("Button", nil, rowFrame)
             PP.Size(saveAsBtn, BTN_W, DD_H)
-            PP.Point(saveAsBtn, "LEFT", saveBtn, "RIGHT", BTN_GAP, 0)
+            PP.Point(saveAsBtn, "LEFT", ddBtn, "RIGHT", BTN_GAP, 0)
             saveAsBtn:SetFrameLevel(rowFrame:GetFrameLevel() + 2)
             EllesmereUI.MakeStyledButton(saveAsBtn, "Save As", 13,
                 EllesmereUI.WB_COLOURS, function()
@@ -3284,75 +3285,213 @@ initFrame:SetScript("OnEvent", function(self)
         -------------------------------------------------------------------
         _, h = W:SectionHeader(parent, "POPULAR PRESETS", y);  y = y - h
 
-        -- EllesmereUI preset (applies defaults)
-        _, h = W:WideButton(parent, "EllesmereUI (Default)", y, function()
-            EllesmereUI:ShowConfirmPopup({
-                title = "Apply EllesmereUI Defaults",
-                message = "This will reset all addon settings to EllesmereUI defaults and save as your active profile. Continue?",
-                confirmText = "Apply",
-                cancelText = "Cancel",
-                onConfirm = function()
-                    -- Reset all addons to defaults by reloading
-                    -- Store intent in DB so post-reload we know to reset
-                    if EllesmereUIDB then
-                        EllesmereUIDB._pendingPresetReset = "ellesmereui"
-                    end
-                    ReloadUI()
-                end,
-            })
-        end);  y = y - h
+        do
+            -- Build the flat list of preset entries shown in the dropdown.
+            -- Each entry: { label, onApply() }
+            local presetEntries = {}
 
-        -- Spin the Wheel preset
-        _, h = W:WideButton(parent, "Spin the Wheel (Randomize)", y, function()
-            EllesmereUI:ShowConfirmPopup({
-                title = "Spin the Wheel",
-                message = "This will randomize all your settings (except positions). Party Mode will be enabled. Continue?",
-                confirmText = "Spin!",
-                cancelText = "Cancel",
-                onConfirm = function()
-                    EllesmereUI.SpinTheWheel()
-                    EllesmereUI.SaveCurrentAsProfile("Spin the Wheel")
-                    ReloadUI()
-                end,
-            })
-        end);  y = y - h
-
-        -- Weekly Spotlight (if set)
-        if EllesmereUI.WEEKLY_SPOTLIGHT then
-            local spot = EllesmereUI.WEEKLY_SPOTLIGHT
-            _, h = W:WideButton(parent,
-                "Weekly Spotlight: " .. spot.name, y, function()
-                    if spot.exportString then
-                        local ok, err = EllesmereUI.ImportProfile(
-                            spot.exportString, "Weekly: " .. spot.name)
-                        if ok then
+            -- EllesmereUI defaults
+            presetEntries[#presetEntries + 1] = {
+                label = "EllesmereUI (Default)",
+                onApply = function()
+                    EllesmereUI:ShowConfirmPopup({
+                        title = "Apply EllesmereUI Defaults",
+                        message = "This will reset all addon settings to EllesmereUI defaults and save as your active profile. Continue?",
+                        confirmText = "Apply",
+                        cancelText = "Cancel",
+                        onConfirm = function()
+                            if EllesmereUIDB then
+                                EllesmereUIDB._pendingPresetReset = "ellesmereui"
+                                EllesmereUIDB._pendingPresetName = UniquePresetName("EllesmereUI")
+                            end
                             ReloadUI()
-                        else
-                            EllesmereUI:ShowInfoPopup({
-                                title = "Spotlight Error",
-                                content = err or "Unknown error",
-                            })
-                        end
-                    end
-                end);  y = y - h
-        end
+                        end,
+                    })
+                end,
+            }
 
-        -- Additional popular presets from the hardcoded list
-        for _, preset in ipairs(EllesmereUI.POPULAR_PRESETS) do
-            if preset.exportString then
-                _, h = W:WideButton(parent, preset.name, y, function()
-                    local ok, err = EllesmereUI.ImportProfile(
-                        preset.exportString, preset.name)
-                    if ok then
-                        ReloadUI()
-                    else
-                        EllesmereUI:ShowInfoPopup({
-                            title = "Preset Error",
-                            content = err or "Unknown error",
-                        })
-                    end
-                end);  y = y - h
+            -- Spin the Wheel
+            presetEntries[#presetEntries + 1] = {
+                label = "Spin the Wheel (Randomize)",
+                onApply = function()
+                    EllesmereUI:ShowConfirmPopup({
+                        title = "Spin the Wheel",
+                        message = "This will randomize all your settings (except positions). Party Mode will be enabled. Continue?",
+                        confirmText = "Spin!",
+                        cancelText = "Cancel",
+                        onConfirm = function()
+                            EllesmereUI.SpinTheWheel()
+                            EllesmereUI.SaveCurrentAsProfile(UniquePresetName("Spin the Wheel"))
+                            ReloadUI()
+                        end,
+                    })
+                end,
+            }
+
+            -- Weekly Spotlight (if set)
+            if EllesmereUI.WEEKLY_SPOTLIGHT then
+                local spot = EllesmereUI.WEEKLY_SPOTLIGHT
+                presetEntries[#presetEntries + 1] = {
+                    label = "Weekly Spotlight: " .. spot.name,
+                    onApply = function()
+                        if not spot.exportString then return end
+                        local ok, err = EllesmereUI.ImportProfile(
+                            spot.exportString, UniquePresetName("Weekly: " .. spot.name))
+                        if ok then ReloadUI()
+                        else EllesmereUI:ShowInfoPopup({ title = "Spotlight Error", content = err or "Unknown error" }) end
+                    end,
+                }
             end
+
+            -- Additional popular presets from the hardcoded list
+            for _, preset in ipairs(EllesmereUI.POPULAR_PRESETS) do
+                if preset.exportString then
+                    local p = preset  -- capture
+                    presetEntries[#presetEntries + 1] = {
+                        label = p.name,
+                        onApply = function()
+                            local ok, err = EllesmereUI.ImportProfile(
+                                p.exportString, UniquePresetName(p.name))
+                            if ok then ReloadUI()
+                            else EllesmereUI:ShowInfoPopup({ title = "Preset Error", content = err or "Unknown error" }) end
+                        end,
+                    }
+                end
+            end
+
+            -- Dropdown + Apply button row
+            local ROW_H = 60
+            local rowFrame = CreateFrame("Frame", nil, parent)
+            local totalW = parent:GetWidth() - EllesmereUI.CONTENT_PAD * 2
+            PP.Size(rowFrame, totalW, ROW_H)
+            PP.Point(rowFrame, "TOPLEFT", parent, "TOPLEFT", EllesmereUI.CONTENT_PAD, y)
+            EllesmereUI.RowBg(rowFrame, parent)
+
+            local BTN_W  = 100
+            local BTN_GAP = 8
+            local DD_H   = 30
+            local DD_W   = totalW - EllesmereUI.CONTENT_PAD * 2 - BTN_W - BTN_GAP - 20
+
+            local selectedIdx = 1
+
+            -- Dropdown button
+            local ddBtn = CreateFrame("Button", nil, rowFrame)
+            PP.Size(ddBtn, DD_W, DD_H)
+            PP.Point(ddBtn, "LEFT", rowFrame, "LEFT", 20, 0)
+            ddBtn:SetFrameLevel(rowFrame:GetFrameLevel() + 2)
+
+            local ddBg = ddBtn:CreateTexture(nil, "BACKGROUND")
+            ddBg:SetAllPoints()
+            ddBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
+            EllesmereUI.MakeBorder(ddBtn, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+
+            local ddLabel2 = EllesmereUI.MakeFont(ddBtn, 13, nil, 1, 1, 1)
+            ddLabel2:SetAlpha(EllesmereUI.DD_TXT_A)
+            ddLabel2:SetPoint("LEFT", ddBtn, "LEFT", 12, 0)
+            ddLabel2:SetPoint("RIGHT", ddBtn, "RIGHT", -28, 0)
+            ddLabel2:SetJustifyH("LEFT")
+            ddLabel2:SetText(presetEntries[1].label)
+            EllesmereUI.MakeDropdownArrow(ddBtn, 12, PP)
+
+            -- Dropdown menu
+            local menu2 = CreateFrame("Frame", nil, UIParent)
+            menu2:SetFrameStrata("FULLSCREEN_DIALOG")
+            menu2:SetFrameLevel(200)
+            menu2:SetClampedToScreen(true)
+            menu2:SetSize(DD_W, 4)
+            menu2:SetPoint("TOPLEFT", ddBtn, "BOTTOMLEFT", 0, -2)
+            menu2:Hide()
+            local menuBg2 = menu2:CreateTexture(nil, "BACKGROUND")
+            menuBg2:SetAllPoints()
+            menuBg2:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, 0.98)
+            EllesmereUI.MakeBorder(menu2, 1, 1, 1, EllesmereUI.DD_BRD_A, PP)
+
+            local menuItems2 = {}
+            local function RebuildPresetMenu()
+                for _, itm in ipairs(menuItems2) do itm:Hide() end
+                local mH = 4
+                for i, entry in ipairs(presetEntries) do
+                    local itm = menuItems2[i]
+                    if not itm then
+                        itm = CreateFrame("Button", nil, menu2)
+                        itm:SetHeight(26)
+                        itm:SetFrameLevel(menu2:GetFrameLevel() + 1)
+                        local lbl = itm:CreateFontString(nil, "OVERLAY")
+                        lbl:SetFont(FONT, 13, EllesmereUI.GetFontOutlineFlag())
+                        lbl:SetPoint("LEFT", itm, "LEFT", 10, 0)
+                        lbl:SetTextColor(0.55, 0.60, 0.65, 1)
+                        itm._lbl = lbl
+                        local hl = itm:CreateTexture(nil, "ARTWORK")
+                        hl:SetAllPoints()
+                        hl:SetColorTexture(1, 1, 1, 0)
+                        itm._hl = hl
+                        itm:SetScript("OnEnter", function() lbl:SetTextColor(1,1,1,1); hl:SetAlpha(0.08) end)
+                        itm:SetScript("OnLeave", function()
+                            lbl:SetTextColor(0.55, 0.60, 0.65, 1)
+                            hl:SetAlpha(itm._isSel and 0.04 or 0)
+                        end)
+                        menuItems2[i] = itm
+                    end
+                    itm:SetPoint("TOPLEFT", menu2, "TOPLEFT", 1, -mH)
+                    itm:SetPoint("TOPRIGHT", menu2, "TOPRIGHT", -1, -mH)
+                    itm._lbl:SetText(entry.label)
+                    itm._isSel = (i == selectedIdx)
+                    itm._hl:SetAlpha(itm._isSel and 0.04 or 0)
+                    local idx = i
+                    itm:SetScript("OnClick", function()
+                        menu2:Hide()
+                        selectedIdx = idx
+                        ddLabel2:SetText(presetEntries[idx].label)
+                    end)
+                    itm:Show()
+                    mH = mH + 26
+                end
+                menu2:SetHeight(mH + 4)
+            end
+
+            ddBtn:SetScript("OnClick", function()
+                if menu2:IsShown() then menu2:Hide()
+                else RebuildPresetMenu(); menu2:Show() end
+            end)
+            ddBtn:SetScript("OnEnter", function()
+                ddBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_HA)
+                ddLabel2:SetAlpha(EllesmereUI.DD_TXT_HA)
+            end)
+            ddBtn:SetScript("OnLeave", function()
+                if not menu2:IsShown() then
+                    ddBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
+                    ddLabel2:SetAlpha(EllesmereUI.DD_TXT_A)
+                end
+            end)
+            ddBtn:HookScript("OnHide", function() menu2:Hide() end)
+            menu2:SetScript("OnShow", function(self)
+                local btnScale = ddBtn:GetEffectiveScale()
+                local uiScale = UIParent:GetEffectiveScale()
+                self:SetScale(btnScale / uiScale)
+                self:SetScript("OnUpdate", function(m)
+                    if not ddBtn:IsMouseOver() and not m:IsMouseOver() then
+                        if IsMouseButtonDown("LeftButton") or IsMouseButtonDown("RightButton") then m:Hide() end
+                    end
+                end)
+            end)
+            menu2:SetScript("OnHide", function(self)
+                self:SetScript("OnUpdate", nil)
+                ddBg:SetColorTexture(EllesmereUI.DD_BG_R, EllesmereUI.DD_BG_G, EllesmereUI.DD_BG_B, EllesmereUI.DD_BG_A)
+                ddLabel2:SetAlpha(EllesmereUI.DD_TXT_A)
+            end)
+
+            -- Apply button
+            local applyBtn = CreateFrame("Button", nil, rowFrame)
+            PP.Size(applyBtn, BTN_W, DD_H)
+            PP.Point(applyBtn, "LEFT", ddBtn, "RIGHT", BTN_GAP, 0)
+            applyBtn:SetFrameLevel(rowFrame:GetFrameLevel() + 2)
+            EllesmereUI.MakeStyledButton(applyBtn, "Apply", 13,
+                EllesmereUI.WB_COLOURS, function()
+                    local entry = presetEntries[selectedIdx]
+                    if entry then entry.onApply() end
+                end)
+
+            y = y - ROW_H
         end
 
         -------------------------------------------------------------------
