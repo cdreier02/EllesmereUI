@@ -1,0 +1,79 @@
+name: Issue & PR Automation
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [closed]
+
+env:
+  PROJECT_NUMBER: "3"
+  PROJECT_OWNER: "cdreier02"
+
+jobs:
+  add-issue-to-project:
+    name: Add new issue to project board
+    if: github.event_name == 'issues' && github.event.action == 'opened'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Add to project
+        uses: actions/add-to-project@v1.0.2
+        with:
+          project-url: https://github.com/users/${{ env.PROJECT_OWNER }}/projects/${{ env.PROJECT_NUMBER }}
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+
+  label-on-pr-merge:
+    name: Label issue on PR merge
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Extract issue number and label
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.PROJECT_TOKEN }}
+          script: |
+            const body = context.payload.pull_request.body || '';
+            const title = context.payload.pull_request.title || '';
+            const combined = `${title} ${body}`;
+
+            const match = combined.match(/(?:fixes|closes|resolves)\s+#(\d+)/i);
+            if (!match) {
+              console.log('No linked issue found in PR title or body.');
+              return;
+            }
+
+            const issueNumber = parseInt(match[1]);
+            console.log(`Found linked issue #${issueNumber}`);
+
+            // Add needs-verification label
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['needs-verification']
+            });
+
+            // Remove triage label if present
+            try {
+              await github.rest.issues.removeLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNumber,
+                name: 'triage'
+              });
+            } catch (e) {
+              // Label might not exist, that's fine
+            }
+
+            // Add a comment
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: `Fix merged via #${context.payload.pull_request.number}. Marking as **needs-verification** — please confirm the fix works in-game.`
+            });

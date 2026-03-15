@@ -1,0 +1,74 @@
+name: Bug Report
+description: Report a bug in EllesmereUI
+title: "[Bug] "
+labels: ["triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the bug clearly. What did you expect vs. what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this bug?
+      placeholder: |
+        1. Open settings...
+        2. Click on...
+        3. See error...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: Which part of the addon is affected?
+      options:
+        - Frames (unit, party, target)
+        - Combat (cooldowns, auras, procs)
+        - Settings (options, profiles, presets)
+        - Visual (glows, widgets, cursor, nameplates)
+        - Performance (FPS, memory, load times)
+        - API (WoW API compatibility)
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Addon version
+      description: Which version of EllesmereUI are you using?
+      placeholder: e.g. 4.3.8
+    validations:
+      required: true
+
+  - type: input
+    id: wow-version
+    attributes:
+      label: WoW version
+      description: Which WoW client and version?
+      placeholder: e.g. Retail 11.1, Classic Era 1.15
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or error logs
+      description: Paste any screenshots, error messages, or /etrace output here.
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Where did you find this bug?
+      options:
+        - In-game (self-discovered)
+        - Discord
+        - WoW/CurseForge forums
+        - GitHub
+    validations:
+      required: false
