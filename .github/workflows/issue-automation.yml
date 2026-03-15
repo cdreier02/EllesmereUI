@@ -7,7 +7,7 @@ on:
     types: [closed]
 
 env:
-  PROJECT_NUMBER: "___"  # ← Update with your project number from Step 2
+  PROJECT_NUMBER: "3"
   PROJECT_OWNER: "cdreier02"
 
 jobs:
