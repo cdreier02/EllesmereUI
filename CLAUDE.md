@@ -39,13 +39,13 @@ source:discord, source:forum, source:github
 
 ## Setup Progress
 - [x] Files created (labels script, issue template, Actions workflow)
-- [ ] gh CLI installed and working on Mac (had Gatekeeper + PATH issues)
-- [ ] Labels created on repo
-- [ ] GitHub Project board created with correct columns
-- [ ] PROJECT_NUMBER and PROJECT_OWNER configured in workflow
-- [ ] Fine-grained PAT created with Issues, PRs, Projects permissions
-- [ ] PAT added as PROJECT_TOKEN repo secret
-- [ ] Branch protection rule on main (require PR, 1 approval)
+- [x] gh CLI installed and working on Mac
+- [x] Labels created on repo
+- [x] GitHub Project board created with correct columns (project #3)
+- [x] PROJECT_NUMBER and PROJECT_OWNER configured in workflow
+- [x] Classic PAT created with repo + project scopes
+- [x] PAT added as PROJECT_TOKEN repo secret
+- [x] Branch protection rule on main (require PR, 1 approval)
 - [ ] Test: create issue from template → verify triage label + board placement
 - [ ] Test: create branch, PR with "fixes #1", merge → verify needs-verification label
 - [ ] Test: push directly to main → verify it's blocked
